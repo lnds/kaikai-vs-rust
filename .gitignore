@@ -1,0 +1,11 @@
+# Rust
+**/target/
+*.rlib
+# compiled rust test binaries (we keep .rs only)
+**/rust/*_bin
+# kaikai build artifacts
+*.o
+*.ll
+a.out
+# OS
+.DS_Store
