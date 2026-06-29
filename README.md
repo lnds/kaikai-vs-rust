@@ -44,23 +44,33 @@ one.
 
 ## Index
 
-| # | Case | Category | Claim (one line) |
+| # | Case | Who wins | Claim (one line) |
 |---|------|----------|------------------|
-| 1 | [cyclic-graph](cases/01-cyclic-graph/) | A | A two-node pointer cycle: safe `&` refs are rejected (E0506); Rust forces `Rc<RefCell>`+`Weak`. |
-| 2 | [self-referential](cases/02-self-referential/) | A | A struct holding a reference into its own field: rejected (E0597/E0505); Rust forces `Pin`+`unsafe` or indices. |
-| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | B | One counter mutated by N concurrent tasks: safe `&mut` is rejected (E0499); Rust forces `Arc<Mutex>`. |
-| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | B | Updating a shared immutable tree: Rust forces `Rc::make_mut`/clone; Perceus reuses transparently. |
-| 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | B | Injectable IO + audit + failure: kaikai's effect row vs Rust's generics/`dyn` + `Result`/`?`. |
+| 1 | [cyclic-graph](cases/01-cyclic-graph/) | kaikai (ergonomics) | A two-node pointer cycle: safe `&` refs are rejected (E0506); Rust forces `Rc<RefCell>`+`Weak`, kaikai uses the `Mutable` effect. |
+| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | kaikai (ergonomics) / Rust (parallelism) | One counter mutated by N tasks: safe `&mut` is rejected (E0499); Rust forces `Arc<Mutex>` but gets real multi-core; kaikai uses a shared `var`. |
+| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | **split** | Unique-owner rewrite: Perceus reuses in place for free (kaikai win). Shared rewrite: kaikai 0.93 **corrupts** the original (Rust win on correctness). |
+| 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | kaikai (ergonomics) | `async` is a viral colour in Rust; a kaikai effect row is discharged by a handler. Capability injection without rewriting signatures. |
+| 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** | Bulk flat records: `Vec<Point>` is one allocation, zero RC; kaikai pays ~10k RC ops + ~3k allocations on a linked list. |
 
-> Each case folder has its own `README.md`, a `rust/` directory (the safe
-> version that fails **and** the version Rust forces you to write), and a
+> Case numbering skips 2: the self-referential candidate was discarded (see
+> below). Each case folder has its own `README.md`, a `rust/` directory (the
+> safe version that fails **and** the version Rust forces you to write), and a
 > `kaikai/` directory (the `.kai` that compiles and runs).
+
+Note that two of the six cases are **Rust wins** (6 outright, 4 on the shared
+path) and a third (3) concedes Rust's parallelism. That balance is the point.
 
 ## Discarded cases
 
 Candidate claims that turned out **false** under compilation (safe Rust does
-the thing) are documented, not deleted, in [`discarded/`](discarded/). That
-honesty is part of the point.
+the thing), documented not deleted, in [`discarded/`](discarded/):
+
+- **self-referential struct** — Rust fails (E0597/E0505), but kaikai has no
+  interior references, so the problem cannot even be expressed; not a win.
+- **shared mutable cache** — the "needs `unsafe`" claim is false;
+  `Rc<RefCell<HashMap>>` is safe and compiles.
+
+That honesty is part of the point.
 
 ## Bottom line up front
 
@@ -73,3 +83,11 @@ shapes with cycles, shared mutation, or self-reference do not fit the
 ceremony. kaikai pays a small, uniform Perceus RC cost everywhere and in
 exchange lets you write those shapes directly. Different bet, honestly
 stated, case by case below.
+
+The single most important finding came from trying to build the strongest
+*pro-kaikai* case (Perceus in-place reuse, case 4) and discovering by running
+it that kaikai 0.93 **silently corrupts shared data** during reuse for
+user-defined recursive types — the exact bug the borrow checker exists to
+prevent. It is reported in full rather than buried. That is the whole reason
+every claim here is compiled and run: an asserted comparison would have shipped
+that as a kaikai win; a verified one caught it as a Rust win.
