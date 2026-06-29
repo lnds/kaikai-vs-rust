@@ -1,0 +1,34 @@
+effect Fetch {
+  get(url: String) : String
+}
+
+# 3-layer chain. fetch performs the effect; parse and handle carry it in
+# their row (kaikai requires the row on these signatures, just as Rust
+# requires `async`). The KEY difference: a handler DISCHARGES Fetch, so
+# the caller above the handler is pure again — no "color" reaches main.
+
+fn fetch(url: String) : String / Fetch = Fetch.get(url)
+
+fn parse(url: String) : Int / Fetch = {
+  let body = fetch(url)
+  body.length()
+}
+
+fn handle_req(url: String) : Int / Fetch = parse(url) + 1
+
+# run_with_real installs a handler. Above this point Fetch is GONE from
+# the row — `driver` is pure (only Stdout), no executor, no .await, and
+# swapping the handler for a test stub changes nothing in fetch/parse/handle.
+fn driver(url: String) : Int / Stdout = {
+  let result = handle {
+    handle_req(url)
+  } with Fetch {
+    get(u, resume) -> resume("body of #{u}")
+  }
+  result
+}
+
+fn main() : Int / Stdout = {
+  Stdout.print("result=#{int_to_string(driver("http://example.com"))}")
+  0
+}

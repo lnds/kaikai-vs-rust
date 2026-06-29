@@ -1,0 +1,40 @@
+effect Fetch {
+  get(url: String) : String
+}
+
+effect Audit {
+  note(msg: String) : Unit
+}
+
+# Business logic: pure-looking, but performs Fetch + Audit + Fail.
+# No async/await, no Result threading, no ? at every call.
+fn pipeline(url: String) : Int / Fetch + Audit + Fail = {
+  Audit.note("fetching #{url}")
+  let body = Fetch.get(url)
+  Audit.note("got #{int_to_string(body.length())} bytes")
+  if body.length() == 0 {
+    Fail.fail("empty body")
+  } else {
+    body.length()
+  }
+}
+
+fn main() : Int / Stdout = {
+  # Run with a REAL handler set: Fetch returns a canned body,
+  # Audit prints, Fail prints the error. Swap handlers = swap behavior.
+  let result = handle {
+    handle {
+      handle {
+        pipeline("http://example.com")
+      } with Fetch {
+        get(u, resume) -> resume("hello kaikai world")
+      }
+    } with Audit {
+      note(m, resume) -> { Stdout.print("[audit] #{m}"); resume(()) }
+    }
+  } with Fail {
+    fail(msg, resume) -> { Stdout.print("[error] #{msg}"); 0 - 1 }
+  }
+  Stdout.print("result=#{int_to_string(result)}")
+  0
+}
