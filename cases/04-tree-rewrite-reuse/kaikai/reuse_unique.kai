@@ -1,0 +1,20 @@
+type Tree = Leaf(Int) | Node(Tree, Tree)
+
+fn inc_leaves(t: Tree) : Tree {
+  case Leaf(n)    -> Leaf(n + 1)
+  case Node(l, r) -> Node(inc_leaves(l), inc_leaves(r))
+}
+
+fn sumt(t: Tree) : Int {
+  case Leaf(n)    -> n
+  case Node(l, r) -> sumt(l) + sumt(r)
+}
+
+# UNIQUE-OWNER use: the original is consumed by inc_leaves and never read
+# again. This is the case Perceus reuse is FOR and where it is correct.
+fn main() : Int / Stdout = {
+  let t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))
+  let t2 = inc_leaves(t)    # t not used after this
+  Stdout.print("new=#{int_to_string(sumt(t2))}")   # expect 9
+  0
+}

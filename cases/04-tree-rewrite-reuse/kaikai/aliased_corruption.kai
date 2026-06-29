@@ -1,0 +1,22 @@
+type Tree = Leaf(Int) | Node(Tree, Tree)
+
+fn inc_leaves(t: Tree) : Tree {
+  case Leaf(n)    -> Leaf(n + 1)
+  case Node(l, r) -> Node(inc_leaves(l), inc_leaves(r))
+}
+
+fn sumt(t: Tree) : Int {
+  case Leaf(n)    -> n
+  case Node(l, r) -> sumt(l) + sumt(r)
+}
+
+fn main() : Int / Stdout = {
+  # tiny explicit tree: 3 leaves with values 1,2,3 -> sum 6
+  let t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))
+  let s_before = sumt(t)            # read original BEFORE rewrite
+  let t2 = inc_leaves(t)            # +1 each of 3 leaves -> +3
+  let s_orig_after = sumt(t)        # is the original still 6?
+  let s_new = sumt(t2)              # should be 9
+  Stdout.print("before=#{int_to_string(s_before)} orig_after=#{int_to_string(s_orig_after)} new=#{int_to_string(s_new)}")
+  0
+}
