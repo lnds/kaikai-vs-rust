@@ -1,0 +1,30 @@
+import array
+import loop
+
+type Slot = Empty | Has(Node)
+type Node = { id: Int, next: Array[Slot] }
+
+fn make_node(id: Int) : Node = Node { id: id, next: array_make(1, Empty) }
+
+fn step(n: Node) : Node = match n.next[0] {
+  Has(m) -> m
+  Empty  -> n
+}
+
+fn main() : Int / Stdout + Mutable = {
+  let a = make_node(1)
+  let b = make_node(2)
+  a.next[0] := Has(b)
+  b.next[0] := Has(a)
+
+  var cur := a
+  var steps := 0
+  var trace := ""
+  while { steps < 6 } {
+    trace := "#{trace}#{int_to_string(cur.id)} "
+    cur := step(cur)
+    steps := steps + 1
+  }
+  Stdout.print("trace=#{trace}")
+  0
+}
