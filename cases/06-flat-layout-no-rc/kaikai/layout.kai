@@ -1,0 +1,25 @@
+import array
+
+# A flat record processed in bulk. In Rust this is a Vec<Point> with zero
+# reference counting: contiguous, owned, freed in one shot. In kaikai every
+# heap value (the records, the list cells) is under Perceus RC, so the same
+# workload pays incref/decref the borrow checker proves unnecessary.
+
+type Point = { x: Int, y: Int }
+
+fn sum_x(xs: [Point]) : Int {
+  case []        -> 0
+  case [h, ...t] -> h.x + sum_x(t)
+}
+
+fn build(n: Int) : [Point] {
+  case 0 -> []
+  case k -> [Point { x: k, y: k * 2 }] ++ build(k - 1)
+}
+
+fn main() : Int / Stdout = {
+  let pts = build(1000)
+  let total = sum_x(pts)
+  Stdout.print("total=#{int_to_string(total)}")
+  0
+}
