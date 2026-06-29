@@ -1,0 +1,14 @@
+import spawn
+
+fn main() : Int / Spawn + Stdout = {
+  var counter := 0
+  nursery { n ->
+    let fibers = [1, 2, 3, 4, 5] | (x => n.spawn(() => {
+      counter := counter + x
+      ()
+    }))
+    fibers | (f => n.await(f))
+  }
+  Stdout.print("counter=#{int_to_string(counter)}")
+  0
+}
