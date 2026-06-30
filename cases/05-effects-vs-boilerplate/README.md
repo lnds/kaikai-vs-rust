@@ -105,8 +105,8 @@ Fetcher, A: Auditor>(…)`) propagating bounds through every signature, or
 
 ```sh
 cd rust
-rustc --edition 2021 color_sync.rs -o cs && ./cs      # result=27
-rustc --edition 2021 color_async.rs -o ca && ./ca     # result=27
+rustc --edition 2024 color_sync.rs -o cs && ./cs      # result=27
+rustc --edition 2024 color_async.rs -o ca && ./ca     # result=27
 cd ../kaikai
 kai run effect_color.kai                               # result=27
 kai run swap_handlers.kai                              # [audit]… result=18

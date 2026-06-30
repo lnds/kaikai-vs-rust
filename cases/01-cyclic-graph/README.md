@@ -36,7 +36,7 @@ fn main() {
 }
 ```
 
-`rustc --edition 2021 rust/cycle_ref_fails.rs`:
+`rustc --edition 2024 rust/cycle_ref_fails.rs`:
 
 ```text
 error[E0506]: cannot assign to `b.next` because it is borrowed
@@ -104,8 +104,8 @@ right, because kaikai is not building a strong-RC cycle to begin with.
 
 ```sh
 cd rust
-rustc --edition 2021 cycle_ref_fails.rs        # E0506, as above
-rustc --edition 2021 cycle_rc_works.rs -o crc && ./crc   # trace=1 2 1 2 1 2
+rustc --edition 2024 cycle_ref_fails.rs        # E0506, as above
+rustc --edition 2024 cycle_rc_works.rs -o crc && ./crc   # trace=1 2 1 2 1 2
 cd ../kaikai
 kai run cycle.kai                              # trace=1 2 1 2 1 2
 ```

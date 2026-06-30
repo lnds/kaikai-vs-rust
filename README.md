@@ -14,12 +14,16 @@ one.
 
 ## Disclaimer / methodology
 
-- **Verified with `rustc 1.92.0` and `kaikai 0.93.0` (hanga-roa, stage 2).**
-  The task brief referenced kaikai 0.94; the toolchain actually installed
-  on this machine is 0.93.0, and that is what every example was run against.
+- **Verified with `rustc 1.92.0` and `kaikai 0.94.0` (hanga-roa, stage 2).**
+  Some kaikai results depend on the **backend**: 0.94 has a default `native`
+  (LLVM) codegen and an alternative `--backend=c`. Where they differ, both are
+  shown — that difference is itself one of the findings (see case 4).
+- **Rust uses edition 2024** (the latest, stabilised in Rust 1.85) — not an
+  older edition, so the comparison is against current Rust. Every result was
+  re-checked under `--edition 2024` and is unchanged from 2021.
 - Every Rust "this requires `unsafe`/`Rc`/`Arc`" claim is backed by the
   **actual compiler error** from the safe version, reproduced in the case
-  README. Reproduce it yourself: `cd <case>/rust && rustc --edition 2021
+  README. Reproduce it yourself: `cd <case>/rust && rustc --edition 2024
   <file>.rs`.
 - Every kaikai example **compiles and runs**: `cd <case>/kaikai && kai run
   <file>.kai`. The pasted output is the real program output.
@@ -47,8 +51,8 @@ one.
 | # | Case | Who wins | Claim (one line) |
 |---|------|----------|------------------|
 | 1 | [cyclic-graph](cases/01-cyclic-graph/) | kaikai (ergonomics) | A two-node pointer cycle: safe `&` refs are rejected (E0506); Rust forces `Rc<RefCell>`+`Weak`, kaikai uses the `Mutable` effect. |
-| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | kaikai (ergonomics) / Rust (parallelism) | One counter mutated by N tasks: safe `&mut` is rejected (E0499); Rust forces `Arc<Mutex>` but gets real multi-core; kaikai uses a shared `var`. |
-| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | **split** | Unique-owner rewrite: Perceus reuses in place for free (kaikai win). Shared rewrite: kaikai 0.93 **corrupts** the original (Rust win on correctness). |
+| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | mixed → Rust | One counter mutated by N tasks: safe `&mut` rejected (E0499); Rust's `Arc<Mutex>` gets real multi-core. kaikai's actor is ergonomic but serial, and the direct shared-`var`-over-fibers form **segfaults on 0.94**. |
+| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | **split** | Unique-owner rewrite: Perceus reuses in place for free (kaikai win, both backends). Shared rewrite: kaikai 0.94's **native** backend **corrupts** the original (Rust win); `--backend=c` is correct, pinning it to native codegen. |
 | 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | kaikai (ergonomics) | `async` is a viral colour in Rust; a kaikai effect row is discharged by a handler. Capability injection without rewriting signatures. |
 | 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** | Bulk flat records: `Vec<Point>` is one allocation, zero RC; kaikai pays ~10k RC ops + ~3k allocations on a linked list. |
 
@@ -57,8 +61,11 @@ one.
 > safe version that fails **and** the version Rust forces you to write), and a
 > `kaikai/` directory (the `.kai` that compiles and runs).
 
-Note that two of the six cases are **Rust wins** (6 outright, 4 on the shared
-path) and a third (3) concedes Rust's parallelism. That balance is the point.
+Note the balance: case 6 is an outright **Rust win**, case 4's shared path is
+a **Rust win** (native-backend corruption), and case 3 tilts to **Rust** too
+(real parallelism, plus a 0.94 segfault in the direct kaikai form). Only cases
+1 and 5 are clean kaikai ergonomics wins. That is the point — this is not a
+sales sheet.
 
 ## Discarded cases
 
@@ -86,8 +93,11 @@ stated, case by case below.
 
 The single most important finding came from trying to build the strongest
 *pro-kaikai* case (Perceus in-place reuse, case 4) and discovering by running
-it that kaikai 0.93 **silently corrupts shared data** during reuse for
-user-defined recursive types — the exact bug the borrow checker exists to
-prevent. It is reported in full rather than buried. That is the whole reason
-every claim here is compiled and run: an asserted comparison would have shipped
-that as a kaikai win; a verified one caught it as a Rust win.
+it that kaikai 0.94's **native backend silently corrupts shared data** during
+reuse for user-defined recursive types — the exact bug the borrow checker
+exists to prevent. The `--backend=c` build of the same program is correct,
+which is itself the proof that the Perceus *model* is sound and the fault is in
+one code generator. Both halves are reported rather than buried. That is the
+whole reason every claim here is compiled and run: an asserted comparison would
+have shipped the corruption as a kaikai win; a verified one caught it, located
+it in the native backend, and confirmed the C backend gets it right.

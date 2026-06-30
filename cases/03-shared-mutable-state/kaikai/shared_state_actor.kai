@@ -1,0 +1,30 @@
+import actor
+import spawn
+
+# Shared mutable state as an ACTOR: the counter lives inside one actor's
+# private heap; "tasks" send Add messages. The actor serialises them by
+# processing its mailbox one message at a time. No Arc, no Mutex, no lock —
+# isolation is by message-passing, not shared memory.
+
+type Msg = Add(Int) | Stop
+
+fn counter(total: Int) : Int / Actor[Msg] + Stdout = {
+  let m = Actor.receive()
+  match m {
+    Add(n) -> counter(total + n)
+    Stop   -> total
+  }
+}
+
+fn main() : Int / Spawn + Stdout = with_mailbox {
+  # five "tasks" each contribute their number
+  Actor.send(Actor.self(), Add(1))
+  Actor.send(Actor.self(), Add(2))
+  Actor.send(Actor.self(), Add(3))
+  Actor.send(Actor.self(), Add(4))
+  Actor.send(Actor.self(), Add(5))
+  Actor.send(Actor.self(), Stop)
+  let total = counter(0)
+  Stdout.print("counter=#{int_to_string(total)}")
+  0
+}

@@ -15,14 +15,14 @@ use std::rc::Rc;
 
 let cache: Rc<RefCell<HashMap<String, i32>>> = Rc::new(RefCell::new(HashMap::new()));
 
-let writer = { let c = Rc::clone(&cache); move |k: &str, v: i32| { c.borrow_mut().insert(k.into(), v); } };
+let writer = { let c = Rc::clone(&cache); move |k: &str, v: i32| { c.borrow_mut().insert(k.to_string(), v); } };
 let reader = { let c = Rc::clone(&cache); move |k: &str| c.borrow().get(k).copied() };
 
 writer("a", 1); writer("b", 2);
 println!("a={:?} b={:?} miss={:?}", reader("a"), reader("b"), reader("z"));
 ```
 
-`rustc --edition 2021 cache_compiles_safely.rs && ./a.out`:
+`rustc --edition 2024 cache_compiles_safely.rs && ./a.out`:
 
 ```text
 a=Some(1) b=Some(2) miss=None

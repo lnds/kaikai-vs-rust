@@ -26,7 +26,7 @@ fn main() {
 }
 ```
 
-`rustc --edition 2021 selfref_fails.rs`:
+`rustc --edition 2024 selfref_fails.rs`:
 
 ```text
 error[E0597]: `s` does not live long enough

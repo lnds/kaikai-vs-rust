@@ -95,7 +95,7 @@ inline bytes in one block.
 
 ```sh
 cd rust
-rustc --edition 2021 -O layout.rs -o layout && ./layout      # total=500500
+rustc --edition 2024 -O layout.rs -o layout && ./layout      # total=500500
 cd ../kaikai
 KAI_TRACE_RC=1 kai run layout.kai                            # total=500500 + RC trace
 ```

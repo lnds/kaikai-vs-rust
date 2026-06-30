@@ -4,10 +4,12 @@
 every leaf of a tree (`+1`) is the textbook Perceus showcase: pure functional
 code that the compiler turns into in-place mutation when the input is uniquely
 owned, with no `clone` and no `Rc` written by hand. That half is real and
-measured below. But the **same mechanism corrupts shared data** in kaikai
-0.93 for user-defined recursive sum types — exactly the bug class Rust's
-borrow checker exists to prevent. Both halves are shown, because publishing
-only the first would be dishonest.
+measured below. But under kaikai 0.94's **default native (LLVM) backend** the
+same mechanism **corrupts shared data** for user-defined recursive sum types —
+exactly the bug class Rust's borrow checker exists to prevent. Crucially, the
+`--backend=c` build of the identical program is correct, which pins the fault
+on the native code generator, not the Perceus model. All of this is shown,
+because publishing only the happy half would be dishonest.
 
 ## Part 1 — the win: in-place reuse for free (unique owner)
 
@@ -72,20 +74,43 @@ fn main() : Int / Stdout = {
 }
 ```
 
-`kai run aliased_corruption.kai`:
+Build it with the **default native (LLVM) backend** and run:
 
 ```text
+$ kai build --backend=native aliased_corruption.kai -o t && ./t
 before=6 orig_after=9 new=9
 ```
 
 **`orig_after=9`. The original tree changed from 6 to 9.** `inc_leaves(t)`
 reused `t`'s nodes in place even though `t` is read afterwards, mutating data
-that should have been immutable. This reproduces at both `--debug` (`-O0`)
-and `--release` (`-O2`), so it is not an optimisation artifact. It happens for
-user-defined recursive sum types (`Tree`, a custom `ICons` list both corrupt);
-the **builtin** list with the map pipe (`xs | (x => x + 1)`) preserves the
-original correctly (`ys=9 xs=6`), which points at the unique-owner analysis
-for user ADTs as the culprit rather than the Perceus model itself.
+that should have been immutable.
+
+### …but the C backend gets it right — so the model is sound
+
+The same source, built with `--backend=c`, preserves the original:
+
+```text
+$ kai build --backend=c aliased_corruption.kai -o t && ./t
+before=6 orig_after=6 new=9
+```
+
+`orig_after=6` — correct. The original is untouched, `t2` is the new tree.
+This is the decisive datum: **the bug is in kaikai 0.94's native (LLVM)
+codegen, not in the Perceus model or its uniqueness analysis.** Three controls
+confirm it:
+
+1. **C backend, same program:** correct (`orig_after=6`).
+2. **Native backend, builtin list** (`xs | (x => x + 1)`): correct
+   (`ys=9 xs=6`) on both backends — only user-defined recursive ADTs corrupt,
+   and only under native.
+3. **Unique-owner reuse works on both backends** (`reuse_in_place=5` above):
+   the analysis that decides "this is safe to reuse" is right; the native
+   code it emits for the *shared* case is what's wrong.
+
+So the uniqueness analysis correctly *would* clone here (the C backend proves
+it), but the native backend emits in-place mutation anyway. That is a
+soundness bug in one codegen path, not a flaw in reference-counted reuse as an
+idea.
 
 ### Rust does not have this footgun
 
@@ -106,11 +131,12 @@ forbids; you either get a fresh clone (`make_mut`) or a compile error.
 
 ```sh
 cd rust
-rustc --edition 2021 tree_rebuild_rc.rs -o trc && ./trc   # orig=6 inc=9
-rustc --edition 2021 tree_makemut.rs   -o tmm && ./tmm    # unique new=9 / shared original=30 derived=32
+rustc --edition 2024 tree_rebuild_rc.rs -o trc && ./trc   # orig=6 inc=9
+rustc --edition 2024 tree_makemut.rs   -o tmm && ./tmm    # unique new=9 / shared original=30 derived=32
 cd ../kaikai
-KAI_TRACE_RC=1 kai run reuse_unique.kai                   # new=9 / reuse_in_place=5
-kai run aliased_corruption.kai                            # before=6 orig_after=9 new=9  <- bug
+KAI_TRACE_RC=1 kai run reuse_unique.kai                          # new=9 / reuse_in_place=5
+kai build --backend=native aliased_corruption.kai -o t && ./t   # orig_after=9  <- native bug
+kai build --backend=c      aliased_corruption.kai -o t && ./t   # orig_after=6  <- C is correct
 ```
 
 ## Where Rust wins / the trade-off
@@ -119,15 +145,18 @@ kai run aliased_corruption.kai                            # before=6 orig_after=
   reuse, no `Rc`/`make_mut` ceremony, measured `reuse_in_place=5`. If your
   code is linear (you transform a value and discard the old binding), Perceus
   is a real, free win here.
-- **On the shared path, Rust wins on correctness, decisively.** kaikai 0.93's
-  reuse analysis for user-defined recursive ADTs mutates aliased data in
-  place, silently corrupting a value the program still holds. The borrow
-  checker makes that class of bug *unrepresentable*; `Rc::make_mut` makes the
-  safe choice (clone-on-shared) automatic. This is the strongest pro-Rust
-  result in the whole repo, and it came out of trying to build a pro-kaikai
-  case — which is exactly why every claim here is run, not asserted.
-- The Perceus *model* (as in Koka) is sound; this looks like an
-  implementation gap in kaikai 0.93's uniqueness analysis for user ADTs, not
-  a flaw in reference-counted reuse as an idea. But a repo aimed at a skeptic
-  reports the behavior of the compiler that actually shipped, and this is what
-  it does today.
+- **On the shared path, kaikai 0.94's native backend has a soundness bug:**
+  it mutates aliased data in place, silently corrupting a value the program
+  still holds. Rust's borrow checker makes that class of bug *unrepresentable*,
+  and `Rc::make_mut` makes the safe choice (clone-on-shared) automatic — so on
+  a correctness comparison against the **native** backend, Rust wins outright.
+  This came out of trying to build a pro-kaikai case, which is exactly why
+  every claim here is run, not asserted.
+- **But the bug is narrow and not a model flaw.** The C backend handles the
+  identical program correctly, and the uniqueness analysis is right (it reuses
+  only when unique). So the honest verdict is: the *idea* (Perceus
+  reference-counted reuse) is sound and even ergonomically ahead of
+  `Rc::make_mut` on the unique path; the *native code generator that shipped in
+  0.94* has a soundness regression on shared user-ADT reuse that a skeptic can
+  and should hold against it until it's fixed. A user today should prefer
+  `--backend=c` for this pattern, or not rely on aliased reuse.
