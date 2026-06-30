@@ -126,11 +126,13 @@ $ kai run shared_state_fibers_CRASHES.kai
 .../kai: line ...: Segmentation fault: 11
 ```
 
-Capturing a `State`-effect `var` inside a spawned fiber is the trigger; a
-`nursery` with no shared `var` runs fine, and the same logic as an actor (above)
-runs fine. This is a 0.94 runtime bug, not the intended way to write it — the
-actor is the idiom — but a repo built for skeptics reports what the shipped
-compiler does, crashes included.
+Capturing a `State`-effect `var` inside a spawned fiber is the trigger
+(reading it is enough; `await` is not required); a `nursery` with no shared
+`var` runs fine, and the same logic as an actor (above) runs fine. This is a
+0.94 runtime bug, reported upstream as
+[lnds/kaikai#997](https://github.com/lnds/kaikai/issues/997) — not the intended
+way to write it (the actor is the idiom), but a repo built for skeptics reports
+what the shipped compiler does, crashes included.
 
 ## Reproduce
 

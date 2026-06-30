@@ -96,8 +96,9 @@ before=6 orig_after=6 new=9
 
 `orig_after=6` — correct. The original is untouched, `t2` is the new tree.
 This is the decisive datum: **the bug is in kaikai 0.94's native (LLVM)
-codegen, not in the Perceus model or its uniqueness analysis.** Three controls
-confirm it:
+codegen, not in the Perceus model or its uniqueness analysis.** Reported
+upstream as [lnds/kaikai#995](https://github.com/lnds/kaikai/issues/995). Three
+controls confirm it:
 
 1. **C backend, same program:** correct (`orig_after=6`).
 2. **Native backend, builtin list** (`xs | (x => x + 1)`): correct

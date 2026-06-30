@@ -101,3 +101,12 @@ one code generator. Both halves are reported rather than buried. That is the
 whole reason every claim here is compiled and run: an asserted comparison would
 have shipped the corruption as a kaikai win; a verified one caught it, located
 it in the native backend, and confirmed the C backend gets it right.
+
+Building this comparison surfaced three reproducible kaikai 0.94 bugs, all
+filed upstream: the native aliasing corruption above
+([lnds/kaikai#995](https://github.com/lnds/kaikai/issues/995)), a C-backend
+`redefinition` error for a `var` named `x`/`state`/`log`
+([#996](https://github.com/lnds/kaikai/issues/996)), and a SIGSEGV when a
+spawned fiber captures a `var`
+([#997](https://github.com/lnds/kaikai/issues/997)). Finding compiler bugs by
+running every example is the methodology working as intended.
