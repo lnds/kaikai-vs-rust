@@ -29,6 +29,11 @@ one.
   <file>.rs`.
 - Every kaikai example **compiles and runs**: `cd <case>/kaikai && kai run
   <file>.kai`. The pasted output is the real program output.
+- Cases 4 and 6 carry a **`## Performance`** section with measured wall-clock
+  and peak RSS at N=1M+ (Rust `-O` vs kaikai `--release`), not just op counts.
+  Benchmarking these surfaced a fourth kaikai bug — a native-backend record
+  leak ([#1048](https://github.com/lnds/kaikai/issues/1048), open) — so kaikai
+  memory numbers use `--backend=c` to stay honest.
 - The Rust shown is the version an **expert would write** — the idiomatic
   safe attempt first. Only when that genuinely fails to compile is the
   `Rc`/`Arc`/`unsafe` workaround presented. No strawmen.
@@ -114,3 +119,11 @@ asserted claims would have been wrong twice — once by shipping the corruption 
 a win, once by never noticing it was fixed. Running everything is the
 methodology; the verdicts are a snapshot of the compiler as it stands, and they
 move.
+
+Then benchmarking case 6 on 0.98 surfaced a fourth bug — the native backend
+leaks record values ([#1048](https://github.com/lnds/kaikai/issues/1048), still
+open): 10M short-lived records take 768 MB on native versus 1 MB on
+`--backend=c`. A candidate fifth finding (arrays of records looking slow) was
+investigated and **not** filed — bisection showed it reduces to #1048 plus the
+ordinary per-access cost of reference counting, not a distinct bug. Chasing a
+weak claim to a "not-a-bug" is the methodology working too.

@@ -100,6 +100,44 @@ cd ../kaikai
 KAI_TRACE_RC=1 kai run layout.kai                            # total=500500 + RC trace
 ```
 
+## Performance at scale (N = 1,000,000)
+
+The op-count above predicts a cost; here is the measured one. Same machine
+(macOS arm64), Rust `-O`, kaikai `--release` (`-O2`); wall-clock is the min of
+6 warm runs, RSS is peak resident set from `/usr/bin/time -l`. **kaikai numbers
+use `--backend=c`** because the native backend currently leaks record values
+([lnds/kaikai#1048](https://github.com/lnds/kaikai/issues/1048)), which would
+inflate its memory here and make the comparison unfair to no one's benefit.
+
+| Implementation | wall-clock | peak RSS |
+|----------------|-----------:|---------:|
+| Rust `Vec<Point>` (`-O`)            | ~0.00 s | 16 MB |
+| kaikai `[Point]` linked list (`-O2`) | ~0.06 s | 132 MB |
+| kaikai `Array[Point]` (`-O2`)        | ~0.08 s | 86 MB |
+
+Rust builds and sums 1M points below the timer's resolution in a 16 MB buffer;
+at N=10M it is still ~0.01 s. kaikai is ~an order of magnitude slower and uses
+5–8× the memory. The RC trace shows why: the linked-list version does
+`incref_total≈4.0M` + `decref_total≈7.0M` ≈ **11M reference-count operations**
+and `alloc_total≈3M` (1M `Point` records + 2M `cons` cells) for the same 1M
+points, versus Rust's single contiguous allocation and zero counting.
+
+Two honest caveats:
+
+- **Cross-language wall-clock is slippery.** Rust's number is so low mostly
+  because LLVM vectorises a trivial loop; the point is the *shape* of the gap
+  (one alloc + no RC vs millions of both), not the exact ratio.
+- **kaikai's `Array` is no faster than its list here**, which is
+  counter-intuitive for contiguous storage. The array itself is a single
+  allocation (`alloc_total` stays ~15 for 1M elements), so the layout is right;
+  the cost is per-access reference counting. On the correct (C) backend, reading
+  `arr[i]` costs about +1 incref/+1 decref per element for an `Int` array and
+  about +3/+2 for a record array, all balanced — the cache-friendly layout is
+  eaten by that per-access counting, not by a bug. (On the native backend it
+  looks worse, but that extra churn is the record leak
+  [#1048](https://github.com/lnds/kaikai/issues/1048), not a distinct array
+  issue — verified by bisection. Numbers here use `--backend=c` for that reason.)
+
 ## Where Rust wins / the trade-off
 
 - **Zero-cost ownership.** The borrow checker proved, at compile time, that

@@ -28,28 +28,41 @@ remote, no push — the owner reviews and publishes).
 
 Case numbering skips 2 (self-referential was discarded).
 
-## ✅ Upstream bugs found while building this — all fixed
+## Upstream bugs found while building this
 
-Building this on kaikai 0.94 surfaced three reproducible bugs, filed at
-`github.com/lnds/kaikai`. **All three are CLOSED / fixed as of kaikai 0.98**,
-and the affected cases were re-verified and rewritten. Kept here as the record
-of why the repo runs every claim.
+Filed at `github.com/lnds/kaikai`. The first three were found on 0.94 and are
+**fixed as of 0.98**; the fourth was found on 0.98 while benchmarking and is
+**open**. Kept here as the record of why the repo runs every claim.
 
-- **#995** (fixed) — native backend reused recursive-ADT nodes in place when the
-  value was shared, corrupting the original. On 0.98 native and C both print
-  `before=6 orig_after=6 new=9`. Case 4 flipped split → kaikai win.
-- **#996** (fixed) — C backend emitted `redefinition of kai_<var>` for a `var`
-  named `x`, `state`, or `log`. On 0.98 all three compile and run. Never
-  surfaced in a case (we avoid those names); nothing to change.
-- **#997** (fixed) — SIGSEGV when a spawned fiber captured a `var`. On 0.98 this
-  is a **compile-time error** ("a closure that accesses the mutable cell `x`
-  escapes its block"), not a crash. Case 3's kaikai side is now that static
-  rejection (repro: `cases/03-shared-mutable-state/kaikai/shared_state_fibers_REJECTED.kai`),
-  mirroring Rust's E0499.
+- **#995** (fixed) — native reused recursive-ADT nodes in place when shared,
+  corrupting the original. Case 4 flipped split → kaikai win on 0.98.
+- **#996** (fixed) — C backend `redefinition of kai_<var>` for a `var` named
+  `x`/`state`/`log`. Never surfaced in a case.
+- **#997** (fixed) — SIGSEGV when a spawned fiber captured a `var`. On 0.98 it's
+  a compile-time error ("mutable cell escapes its block"); case 3's kaikai side
+  is that static rejection, mirroring Rust's E0499.
+- **#1048** (OPEN) — **native backend leaks record values**: `type P = {...}`
+  allocated in a loop is never freed on native (ADT variants are fine; C backend
+  is fine). 10M records → 768 MB native vs 1 MB C. MCVE in the issue. This
+  inflates native RSS, so the **case 6 performance table uses `--backend=c`** for
+  honest memory numbers. Re-check when it closes; native memory should then match C.
 
-If kaikai upgrades again, re-run the suite (below) — verdicts are a snapshot of
-the compiler and can move. Check issue state with
+If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
+snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state`.
+
+## Benchmarking notes
+
+- Perf numbers live in the `## Performance` section of cases 4 and 6. Method:
+  same machine, Rust `-O`, kaikai `--release`; wall-clock = min of ~6 warm runs
+  via `/usr/bin/time -l`; peak RSS from the same. No `hyperfine` installed.
+- Force Rust to not constant-fold the whole program: read N from `argv` and wrap
+  the result in `std::hint::black_box`, else `rustc -O` computes it at compile
+  time and reports ~0 for everything.
+- Use `--backend=c` for kaikai memory numbers until #1048 is fixed.
+- `KAI_TRACE_RC=1 ./bin` (stderr) gives `alloc_total`, `free_total`, `leaked`,
+  `live_peak`, `reuse_in_place`, `incref_total`, `decref_total` — the honest way
+  to see RC cost and catch leaks (leaked scaling with N = real leak).
 
 ## How to re-verify everything
 
