@@ -12,9 +12,10 @@ hid its misses would be exactly the propaganda this one is trying not to be.
 ## Honorable mention — a kaikai claim that flipped
 
 The strongest "kaikai wins" candidate, the tree-rewrite / Perceus-reuse case,
-**partly flipped into a Rust win** when run: kaikai 0.94's native (LLVM)
-backend corrupts shared data during in-place reuse for user ADTs (the
-`--backend=c` build is correct, which pins it to the native code generator). It
-was kept (not discarded) and reported honestly in
-[case 4](../cases/04-tree-rewrite-reuse/), because the failure is informative
-rather than fatal to the comparison.
+**flipped into a Rust win and then back** across compiler versions. On kaikai
+0.94 the native (LLVM) backend corrupted shared data during in-place reuse for
+user ADTs (making it a correctness win for Rust); the `--backend=c` build was
+already correct. That bug ([lnds/kaikai#995](https://github.com/lnds/kaikai/issues/995))
+is **fixed as of 0.98**, and [case 4](../cases/04-tree-rewrite-reuse/) is now a
+clean kaikai win, re-verified. The case was kept (not discarded) throughout,
+because tracking the flip is exactly what "run every claim" buys.

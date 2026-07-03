@@ -12,15 +12,15 @@ remote, no push — the owner reviews and publishes).
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.94.0**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.98.0**.
 
 ### Case status (who wins)
 
 | # | Case | Verdict |
 |---|------|---------|
 | 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect |
-| 3 | shared-mutable-state | mixed → Rust — `&mut` rejected E0499; kaikai actor works, shared-`var`-over-fibers **segfaults (#997)** |
-| 4 | tree-rewrite-reuse | split — unique-owner reuse is a kaikai win; **shared reuse corrupts on native (#995)**, C backend correct |
+| 3 | shared-mutable-state | even → Rust (parallelism) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"); Rust wins only on real multi-core |
+| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94) |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
 | 6 | flat-layout-no-rc | **Rust** — `Vec<Point>` zero RC vs ~10k RC ops |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
@@ -28,31 +28,28 @@ remote, no push — the owner reviews and publishes).
 
 Case numbering skips 2 (self-referential was discarded).
 
-## ⏳ Waiting on upstream fixes — the reason to revisit
+## ✅ Upstream bugs found while building this — all fixed
 
-Building this surfaced **three reproducible kaikai 0.94 bugs**, filed at
-`github.com/lnds/kaikai`. When any lands, re-verify and update the affected
-case. Check state with `gh issue view <N> --repo lnds/kaikai --json state`.
+Building this on kaikai 0.94 surfaced three reproducible bugs, filed at
+`github.com/lnds/kaikai`. **All three are CLOSED / fixed as of kaikai 0.98**,
+and the affected cases were re-verified and rewritten. Kept here as the record
+of why the repo runs every claim.
 
-- **#995** — native (LLVM) backend reuses recursive-ADT nodes in place when the
-  value is **shared**, corrupting the original. C backend is correct.
-  - Affects **case 4**. MCVE: `cases/04-tree-rewrite-reuse/kaikai/aliased_corruption.kai`.
-  - When fixed: native should print `orig=3 new=5` (today it prints `orig=5 new=5`).
-    Then case 4's "shared path is a Rust win" flips toward kaikai — rewrite the
-    verdict, the index row, and the root bottom-line accordingly.
-- **#996** — C backend emits `redefinition of kai_<var>` for a `var` named
-  `x`, `state`, or `log`. Root cause: the `State` handler C template closes
-  with literal `kai_x`/`kai_state`/`kai_log` instead of the real cell name.
-  - Not currently surfaced in a case (we avoid those names); a fix just removes
-    a footnote-worthy gotcha.
-- **#997** — SIGSEGV when a spawned fiber captures a `var` (State cell), both
-  backends. Reading the cell is enough; `await` not required.
-  - Affects **case 3**. Repro kept as
-    `cases/03-shared-mutable-state/kaikai/shared_state_fibers_CRASHES.kai`.
-  - When fixed: that file should run and print `counter=15`. Then case 3 can
-    use the shared-`var`-over-fibers form as the primary example instead of the
-    actor, and the "mixed → Rust" verdict softens (Rust still wins on real
-    parallelism — keep that concession).
+- **#995** (fixed) — native backend reused recursive-ADT nodes in place when the
+  value was shared, corrupting the original. On 0.98 native and C both print
+  `before=6 orig_after=6 new=9`. Case 4 flipped split → kaikai win.
+- **#996** (fixed) — C backend emitted `redefinition of kai_<var>` for a `var`
+  named `x`, `state`, or `log`. On 0.98 all three compile and run. Never
+  surfaced in a case (we avoid those names); nothing to change.
+- **#997** (fixed) — SIGSEGV when a spawned fiber captured a `var`. On 0.98 this
+  is a **compile-time error** ("a closure that accesses the mutable cell `x`
+  escapes its block"), not a crash. Case 3's kaikai side is now that static
+  rejection (repro: `cases/03-shared-mutable-state/kaikai/shared_state_fibers_REJECTED.kai`),
+  mirroring Rust's E0499.
+
+If kaikai upgrades again, re-run the suite (below) — verdicts are a snapshot of
+the compiler and can move. Check issue state with
+`gh issue view <N> --repo lnds/kaikai --json state`.
 
 ## How to re-verify everything
 

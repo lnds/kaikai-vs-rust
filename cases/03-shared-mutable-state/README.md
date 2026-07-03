@@ -8,15 +8,16 @@ Expected total: `1+2+3+4+5 = 15`.
 > Sharing one `&mut counter` across several scoped threads is rejected by
 > the borrow checker (E0499): two mutable borrows of the same cell may not
 > be live at once. The safe way is `Arc<Mutex<i32>>` — atomic reference
-> counting plus a lock, taken and released on every increment. kaikai's
-> idiomatic answer avoids shared memory entirely: the counter lives in an
-> **actor**, and tasks send it messages; the actor serialises them on its
-> private mailbox, no lock needed.
+> counting plus a lock, taken and released on every increment.
 >
-> Two honest caveats, both shown below: kaikai's actor is single-threaded
-> for this counter (no real parallelism, where Rust gets it), and the *most
-> direct* translation — a shared `var` mutated from fibers — **segfaults on
-> kaikai 0.94**. So this case is more mixed than a clean kaikai win.
+> **kaikai rejects the same mistake, statically, too.** Capturing a shared
+> `var` (State cell) in a spawned fiber is a compile error: *"a closure that
+> accesses the mutable cell `counter` escapes its block."* Both languages
+> refuse concurrent shared mutation at compile time and push you to a safe
+> model — Rust to `Arc<Mutex>`, kaikai to an **actor** (message-passing, no
+> shared memory). The one asymmetry that remains: Rust's `Arc<Mutex>` runs on
+> real OS threads across cores; kaikai's actor serialises on one fiber. So Rust
+> wins on *parallelism*, but no longer on *safety* — that part is now a wash.
 
 ## Rust — the idiomatic safe attempt fails
 
@@ -113,26 +114,48 @@ fn main() : Int / Spawn + Stdout = with_mailbox {
 No `Arc`, no `Mutex`, no `clone`. Isolation is by message-passing (BEAM-style);
 the actor's private heap is never aliased.
 
-### A simpler `var` form crashes on 0.94 — reported honestly
+### kaikai — the idiomatic safe attempt also fails (statically)
 
 The most direct translation of the Rust version is a shared `var counter`
-captured by fibers spawned in a `nursery`. It is kept as
-[`kaikai/shared_state_fibers_CRASHES.kai`](kaikai/shared_state_fibers_CRASHES.kai)
-because on **kaikai 0.94 it compiles but segfaults at runtime** (deterministic,
-both `--backend=native` and `--backend=c`):
+captured by fibers spawned in a `nursery` — the exact analogue of the Rust
+`thread::scope` + `&mut` attempt above.
+[`kaikai/shared_state_fibers_REJECTED.kai`](kaikai/shared_state_fibers_REJECTED.kai):
 
-```text
-$ kai run shared_state_fibers_CRASHES.kai
-.../kai: line ...: Segmentation fault: 11
+```kaikai
+fn main() : Int / Spawn + Stdout = {
+  var counter := 0
+  nursery { n ->
+    let fibers = [1, 2, 3, 4, 5] | (x => n.spawn(() => {
+      counter := counter + x       # capture a shared var in a spawned fiber
+      ()
+    }))
+    fibers | (f => n.await(f))
+  }
+  Stdout.print("counter=#{int_to_string(counter)}")
+  0
+}
 ```
 
-Capturing a `State`-effect `var` inside a spawned fiber is the trigger
-(reading it is enough; `await` is not required); a `nursery` with no shared
-`var` runs fine, and the same logic as an actor (above) runs fine. This is a
-0.94 runtime bug, reported upstream as
-[lnds/kaikai#997](https://github.com/lnds/kaikai/issues/997) — not the intended
-way to write it (the actor is the idiom), but a repo built for skeptics reports
-what the shipped compiler does, crashes included.
+`kai build shared_state_fibers_REJECTED.kai` (both backends):
+
+```text
+error: a closure that accesses the mutable cell `counter` escapes its block
+  --> shared_state_fibers_REJECTED.kai:6:50
+   |
+ 6 |     let fibers = [1, 2, 3, 4, 5] | (x => n.spawn(() => {
+   |                                                  ^
+  = help: the handler for `counter` is fiber-local: it is torn down when its
+    block exits and does not cross a `spawn`; a `var`/State/Reader cell or a
+    capability bound by `as` cannot outlive its `handle` — pass its value down
+    as a call argument, or model shared mutable state across fibers as an actor
+```
+
+This is the direct counterpart of Rust's E0499: kaikai statically refuses to
+let a mutable cell be shared across the fiber boundary, and the diagnostic even
+names the fix (an actor). On kaikai 0.94 this same program instead **compiled
+and segfaulted** ([lnds/kaikai#997](https://github.com/lnds/kaikai/issues/997));
+0.98 turned the runtime crash into this compile-time rejection — the safety
+story is now static on both sides.
 
 ## Reproduce
 
@@ -142,29 +165,25 @@ rustc --edition 2024 shared_state_fails.rs                      # E0499
 rustc --edition 2024 shared_state_arc_works.rs -o ss && ./ss    # counter=15
 cd ../kaikai
 kai run shared_state_actor.kai                                  # counter=15
-kai run shared_state_fibers_CRASHES.kai                         # SIGSEGV on 0.94
+kai build shared_state_fibers_REJECTED.kai                      # compile error (escapes its block)
 ```
 
 ## Where Rust wins / the trade-off
 
-This is the case where Rust wins on something kaikai cannot match, and it
-must be stated plainly:
+Safety is now symmetric — both languages reject shared mutable state across
+concurrency at compile time. The remaining asymmetry is parallelism:
 
-- **Rust's `Arc<Mutex>` buys real multi-core parallelism.** Those five
-  threads run on different cores; the `Mutex` makes the shared write safe
-  *under true preemptive parallelism*. The result is correct because the
-  lock enforces it.
-- **kaikai's actor serialises by construction.** There is no data race
-  because the actor processes one message at a time on its private heap — but
-  that is also single-threaded for this counter, so it does **not** give you
-  the CPU-parallel speedup the Rust version can. Same answer (`15`), different
-  execution model.
-- **And the most direct kaikai form does not even run on 0.94** (the fiber +
-  shared `var` segfault above). Rust's version compiles once it satisfies the
-  borrow checker and then runs, every time. On reliability of the obvious
-  translation, Rust clearly wins here today.
-- Honest summary: the *actor* model is genuinely simpler to write than
-  `Arc<Mutex>` and safe by message-passing, but it trades away real
-  parallelism, and kaikai 0.94's shared-`var`-over-fibers path is currently
-  broken. The borrow checker, by contrast, is doing strictly more work and
-  the ceremony is the price of safe, real parallelism that actually runs.
+- **Rust's `Arc<Mutex>` buys real multi-core parallelism.** Those five threads
+  run on different cores; the `Mutex` makes the shared write safe *under true
+  preemptive parallelism*. When you genuinely need N cores hammering one piece
+  of shared memory, this is doing strictly more than kaikai's actor.
+- **kaikai's actor serialises by construction.** No data race because the actor
+  processes one message at a time on its private heap — but that is
+  single-threaded for this counter, so it does **not** give the CPU-parallel
+  speedup the Rust version can. Same answer (`15`), different execution model.
+- **On safety and ergonomics they are now even.** Both reject the naive shared
+  mutation statically; kaikai's actor is arguably lighter to write than
+  `Arc<Mutex>` + `lock().unwrap()` + `Arc::clone`, while Rust's version, once it
+  compiles, gives real parallelism. Pick by whether you need message-passing
+  concurrency (kaikai reads cleaner) or shared-memory parallelism across cores
+  (Rust is the only one that delivers it here).
