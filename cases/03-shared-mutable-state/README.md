@@ -90,29 +90,33 @@ compiles and runs (native backend), prints `counter=15`:
 import actor
 import spawn
 
+use Actor    # open the effect's ops so send/receive/self resolve by bare name
+
 type Msg = Add(Int) | Stop
 
 fn counter(total: Int) : Int / Actor[Msg] + Stdout = {
-  match Actor.receive() {
+  match receive() {
     Add(n) -> counter(total + n)
     Stop   -> total
   }
 }
 
 fn main() : Int / Spawn + Stdout = with_mailbox {
-  Actor.send(Actor.self(), Add(1))
-  Actor.send(Actor.self(), Add(2))
-  Actor.send(Actor.self(), Add(3))
-  Actor.send(Actor.self(), Add(4))
-  Actor.send(Actor.self(), Add(5))
-  Actor.send(Actor.self(), Stop)
+  send(self(), Add(1))
+  send(self(), Add(2))
+  send(self(), Add(3))
+  send(self(), Add(4))
+  send(self(), Add(5))
+  send(self(), Stop)
   Stdout.print("counter=#{int_to_string(counter(0))}")
   0
 }
 ```
 
 No `Arc`, no `Mutex`, no `clone`. Isolation is by message-passing (BEAM-style);
-the actor's private heap is never aliased.
+the actor's private heap is never aliased. (`use Actor` opens the `Actor`
+effect's ops; without it they read as `Actor.send` / `Actor.receive` /
+`Actor.self` — still one effect, spelled out.)
 
 ### kaikai — the idiomatic safe attempt also fails (statically)
 
