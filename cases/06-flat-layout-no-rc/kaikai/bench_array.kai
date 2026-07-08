@@ -1,6 +1,5 @@
 import os.args
 import core.string
-import array
 
 type Point = { x: Int, y: Int }
 
@@ -8,7 +7,7 @@ fn fill(a: Array[Point], i: Int, n: Int) : Unit / Mutable = {
   if i >= n { () }
   else {
     let k = n - i
-    array_set(a, i, Point { x: k, y: k * 2 })
+    a[i] := Point { x: k, y: k * 2 }
     fill(a, i + 1, n)
   }
 }
