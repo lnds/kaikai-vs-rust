@@ -124,6 +124,19 @@ a pipe — `139` = SIGSEGV. RC behavior: `KAI_TRACE_RC=1 ./bin` prints
   `Mutable` effect in the row; `var` desugars to a `State` handler; the
   idiomatic concurrent-state form is an **actor** (`with_mailbox`), not a
   shared `var`.
+- `Ref[T]` is a first-class mutable heap cell (`Mutable.ref_make/ref_get/
+  ref_set`, or `.set(v)`/`.get()` via UFCS) — the right primitive for "a mutable
+  slot inside a record" (case 1 uses `next: Ref[Slot]`). This is *not* a
+  Rust-style interior `&'a self` reference; the discarded self-referential case
+  is about that borrow-shaped aliasing, not about `Ref`.
+- **`:=` gotcha:** the sugar accepts a bare capability/`Ref` binding (`r := v`),
+  an indexed slot (`a[i] := v`), and a field ending in an index
+  (`n.next[0] := v`) — but **NOT a `Ref`-typed field** (`n.next := v` where
+  `next: Ref[T]`). For a `Ref` field write `n.next.set(v)` or
+  `Mutable.ref_set(n.next, v)`. Filed as
+  [lnds/kaikai#1113](https://github.com/lnds/kaikai/issues/1113). Do not model a
+  record slot as a 1-cell `Array` just to get `:=`; that was the pre-#1113
+  workaround in case 1.
 
 ## Conventions
 
