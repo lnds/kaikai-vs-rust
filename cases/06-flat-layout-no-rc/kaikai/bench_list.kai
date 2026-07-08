@@ -1,0 +1,25 @@
+import os.args
+import core.string
+
+type Point = { x: Int, y: Int }
+
+fn sum_x(xs: [Point]) : Int {
+  case []        -> 0
+  case [h, ...t] -> h.x + sum_x(t)
+}
+
+fn build(n: Int) : [Point] {
+  case 0 -> []
+  case k -> [Point { x: k, y: k * 2 }] ++ build(k - 1)
+}
+
+fn main() : Int / Stdout + Env = {
+  let n = match args.argv() {
+    [s, ..._] -> match string.to_int(s) { Some(v) -> v ; None -> 1000 }
+    []        -> 1000
+  }
+  let pts = build(n)
+  let total = sum_x(pts)
+  Stdout.print("total=#{int_to_string(total)}")
+  0
+}

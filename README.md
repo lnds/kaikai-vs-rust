@@ -14,12 +14,12 @@ one.
 
 ## Disclaimer / methodology
 
-- **Verified with `rustc 1.92.0` and `kaikai 0.98.0` (hanga-roa, stage 2).**
+- **Verified with `rustc 1.92.0` and `kaikai 0.99.0` (hanga-roa, stage 2).**
   kaikai has two backends, a default `native` (LLVM) and `--backend=c`; both are
   exercised where a result could differ. Building this repo on 0.94 surfaced
   three compiler bugs (filed as lnds/kaikai#995–997); **all three are fixed as
-  of 0.98**, and the affected cases (3 and 4) have been re-verified and
-  rewritten. See the history notes in those cases.
+  of 0.98** and stay fixed on 0.99, and the affected cases (3 and 4) have been
+  re-verified. See the history notes in those cases.
 - **Rust uses edition 2024** (the latest, stabilised in Rust 1.85) — not an
   older edition, so the comparison is against current Rust. Every result was
   re-checked under `--edition 2024` and is unchanged from 2021.
@@ -32,8 +32,10 @@ one.
 - Cases 4 and 6 carry a **`## Performance`** section with measured wall-clock
   and peak RSS at N=1M+ (Rust `-O` vs kaikai `--release`), not just op counts.
   Benchmarking these surfaced a fourth kaikai bug — a native-backend record
-  leak ([#1048](https://github.com/lnds/kaikai/issues/1048), open) — so kaikai
-  memory numbers use `--backend=c` to stay honest.
+  leak ([#1048](https://github.com/lnds/kaikai/issues/1048)). On 0.99 its scope
+  shrank to boxed values retained in an `Array`, which is benign for these
+  long-lived workloads, so the numbers now use the **default native backend**;
+  see the per-case notes.
 - The Rust shown is the version an **expert would write** — the idiomatic
   safe attempt first. Only when that genuinely fails to compile is the
   `Rc`/`Arc`/`unsafe` workaround presented. No strawmen.
@@ -59,7 +61,7 @@ one.
 |---|------|----------|------------------|
 | 1 | [cyclic-graph](cases/01-cyclic-graph/) | kaikai (ergonomics) | A two-node pointer cycle: safe `&` refs are rejected (E0506); Rust forces `Rc<RefCell>`+`Weak`, kaikai uses the `Mutable` effect. |
 | 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | even → Rust (parallelism) | One counter mutated by N tasks: **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"), pushing you to `Arc<Mutex>` / an actor. Rust still wins on real multi-core; kaikai's actor is serial. |
-| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | kaikai (ergonomics) | Perceus reuses nodes in place when unique (`reuse_in_place=5`, no `Rc`/`make_mut`) and copies correctly when shared — both backends, on 0.98. (On 0.94 the native backend corrupted the shared case; that bug is fixed.) |
+| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | kaikai (ergonomics) | Perceus reuses nodes in place when unique (`reuse_in_place=5`, no `Rc`/`make_mut`) and copies correctly when shared — both backends, on 0.99. (On 0.94 the native backend corrupted the shared case; that bug is fixed. On 0.99 native codegen also caught up to C in throughput.) |
 | 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | kaikai (ergonomics) | `async` is a viral colour in Rust; a kaikai effect row is discharged by a handler. Capability injection without rewriting signatures. |
 | 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** | Bulk flat records: `Vec<Point>` is one allocation, zero RC; kaikai pays ~10k RC ops + ~3k allocations on a linked list. |
 
@@ -111,19 +113,30 @@ for a `var` named `x`/`state`/`log`), and
 [#997](https://github.com/lnds/kaikai/issues/997) (SIGSEGV when a spawned fiber
 captures a `var`).
 
-**All three are fixed as of kaikai 0.98**, and re-running the suite flipped the
-verdicts accordingly: case 4 became a clean kaikai win (native now copies
-correctly on the shared path), and case 3's kaikai side went from a runtime
-segfault to a clean compile-time rejection that mirrors Rust's E0499. A repo of
-asserted claims would have been wrong twice — once by shipping the corruption as
-a win, once by never noticing it was fixed. Running everything is the
-methodology; the verdicts are a snapshot of the compiler as it stands, and they
-move.
+**All three are fixed as of kaikai 0.98** and stay fixed on 0.99, and re-running
+the suite flipped the verdicts accordingly: case 4 became a clean kaikai win
+(native now copies correctly on the shared path), and case 3's kaikai side went
+from a runtime segfault to a clean compile-time rejection that mirrors Rust's
+E0499. A repo of asserted claims would have been wrong twice — once by shipping
+the corruption as a win, once by never noticing it was fixed. Running everything
+is the methodology; the verdicts are a snapshot of the compiler as it stands,
+and they move.
 
 Then benchmarking case 6 on 0.98 surfaced a fourth bug — the native backend
-leaks record values ([#1048](https://github.com/lnds/kaikai/issues/1048), still
-open): 10M short-lived records take 768 MB on native versus 1 MB on
-`--backend=c`. A candidate fifth finding (arrays of records looking slow) was
-investigated and **not** filed — bisection showed it reduces to #1048 plus the
-ordinary per-access cost of reference counting, not a distinct bug. Chasing a
-weak claim to a "not-a-bug" is the methodology working too.
+leaks record values ([#1048](https://github.com/lnds/kaikai/issues/1048)): 10M
+short-lived records took 768 MB on native versus 1 MB on `--backend=c`. **On
+0.99 that leak's scope shrank** (measured, not asserted): short-lived records
+and records in a linked list now free correctly on native (10M short-lived
+records → 1 MB), but a residual leak remains for boxed values *retained in an
+`Array`* — and it is no longer record-specific (`Array` of an ADT variant leaks
+too). For case 6's workload the array lives to program end, so the leak is
+benign for peak RSS and native now matches C — which is why the tables no longer
+need `--backend=c`. The candidate "arrays of records are slow" finding from 0.98
+resolved into exactly this: not a throughput bug but a retained-`Array` leak
+plus ordinary per-access reference counting. Chasing a weak claim to its precise
+scope is the methodology working too.
+
+> On the compiler moving under you: the GitHub API reports #1048 `CLOSED`, but
+> its comments show it was **reopened** — a fix landed, was reverted to unblock
+> the self-host gate, and is deferred. Trust the measured behavior and the issue
+> discussion, not the bare `state` field.

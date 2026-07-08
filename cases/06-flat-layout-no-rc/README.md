@@ -100,43 +100,78 @@ cd ../kaikai
 KAI_TRACE_RC=1 kai run layout.kai                            # total=500500 + RC trace
 ```
 
-## Performance at scale (N = 1,000,000)
+The `## Performance` table below uses parametrized versions that read N from
+`argv` (so `rustc -O` cannot constant-fold the answer):
+
+```sh
+# Rust: Vec<Point>, black_box'd
+rustc --edition 2024 -O rust/bench_layout.rs -o /tmp/bl && /tmp/bl 1000000
+# kaikai: linked list (SIGSEGVs above ~100k — non-tail recursion)
+kai build --release kaikai/bench_list.kai  -o /tmp/kl && /tmp/kl 100000
+# kaikai: Array[Point], tail-recursive — reaches 1M/10M
+kai build --release kaikai/bench_array.kai -o /tmp/ka && /tmp/ka 1000000
+```
+
+## Performance at scale
 
 The op-count above predicts a cost; here is the measured one. Same machine
-(macOS arm64), Rust `-O`, kaikai `--release` (`-O2`); wall-clock is the min of
-6 warm runs, RSS is peak resident set from `/usr/bin/time -l`. **kaikai numbers
-use `--backend=c`** because the native backend currently leaks record values
-([lnds/kaikai#1048](https://github.com/lnds/kaikai/issues/1048)), which would
-inflate its memory here and make the comparison unfair to no one's benefit.
+(macOS arm64), Rust `-O` with `black_box`, kaikai `--release` (`-O2`);
+wall-clock is the min of 6 warm runs, RSS is peak resident set from
+`/usr/bin/time -l`. N is read from `argv` so `rustc` cannot constant-fold the
+answer. Verified on **kaikai 0.99.0** / **rustc 1.92.0**.
+
+Two things changed since the 0.98 pass and both are reflected here:
+
+1. **The native record leak ([#1048](https://github.com/lnds/kaikai/issues/1048))
+   no longer inflates these numbers.** On 0.99 short-lived records and records
+   in a `[T]` list free correctly on native. A residual leak remains for boxed
+   values *retained in an `Array`* (`Array[Point]` shows `leaked≈N`), but for
+   this workload it is **benign**: the array lives to program end, so nothing
+   accumulates — native peak RSS lands within a few percent of C. So the kaikai
+   numbers below use the **default native backend**; the C column is kept only
+   to show the codegen delta, not for memory honesty.
+2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
+   are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
+   (64 MB on macOS). That is a property of the naive recursive shape, not the
+   compiler — but it means the honest list number is at N=100k, and only the
+   tail-recursive `Array` variant (and Rust) reach 1M+.
+
+**N = 100,000** (the ceiling the list survives), all three shapes:
 
 | Implementation | wall-clock | peak RSS |
 |----------------|-----------:|---------:|
-| Rust `Vec<Point>` (`-O`)            | ~0.00 s | 16 MB |
-| kaikai `[Point]` linked list (`-O2`) | ~0.06 s | 132 MB |
-| kaikai `Array[Point]` (`-O2`)        | ~0.08 s | 86 MB |
+| Rust `Vec<Point>` (`-O`)                    | ~0.00 s | 3 MB |
+| kaikai `[Point]` linked list, native        | ~0.00 s | 23 MB |
+| kaikai `Array[Point]`, native               | ~0.00 s | 10 MB |
 
-Rust builds and sums 1M points below the timer's resolution in a 16 MB buffer;
-at N=10M it is still ~0.01 s. kaikai is ~an order of magnitude slower and uses
-5–8× the memory. The RC trace shows why: the linked-list version does
-`incref_total≈4.0M` + `decref_total≈7.0M` ≈ **11M reference-count operations**
-and `alloc_total≈3M` (1M `Point` records + 2M `cons` cells) for the same 1M
-points, versus Rust's single contiguous allocation and zero counting.
+**N = 1,000,000 and 10,000,000** (`Array` + Rust; the list SIGSEGVs here):
+
+| Implementation | N=1M wall | N=1M RSS | N=10M wall | N=10M RSS |
+|----------------|----------:|---------:|-----------:|----------:|
+| Rust `Vec<Point>` (`-O`)          | ~0.00 s | 16 MB | ~0.01 s | 154 MB |
+| kaikai `Array[Point]`, C          | ~0.05 s | 93 MB | ~0.58 s | 852 MB |
+| kaikai `Array[Point]`, native     | ~0.04 s | 85 MB | ~0.39 s | 844 MB |
+
+Rust builds and sums the points below (1M) or near (10M) the timer's resolution
+in a contiguous buffer; kaikai is ~an order of magnitude slower and uses ~5×
+the memory. The RC trace shows why: at 100k the linked list does
+`incref_total≈0.4M` + `decref_total≈0.7M` ≈ **1.1M reference-count operations**
+and `alloc_total≈0.3M` (100k `Point` records + 200k `cons` cells), versus Rust's
+single contiguous allocation and zero counting. (Note the native backend is now
+*faster* than C on the `Array` workload — 0.39 s vs 0.58 s at 10M — the 0.98
+codegen gap has largely closed.)
 
 Two honest caveats:
 
 - **Cross-language wall-clock is slippery.** Rust's number is so low mostly
   because LLVM vectorises a trivial loop; the point is the *shape* of the gap
   (one alloc + no RC vs millions of both), not the exact ratio.
-- **kaikai's `Array` is no faster than its list here**, which is
-  counter-intuitive for contiguous storage. The array itself is a single
-  allocation (`alloc_total` stays ~15 for 1M elements), so the layout is right;
-  the cost is per-access reference counting. On the correct (C) backend, reading
-  `arr[i]` costs about +1 incref/+1 decref per element for an `Int` array and
-  about +3/+2 for a record array, all balanced — the cache-friendly layout is
-  eaten by that per-access counting, not by a bug. (On the native backend it
-  looks worse, but that extra churn is the record leak
-  [#1048](https://github.com/lnds/kaikai/issues/1048), not a distinct array
-  issue — verified by bisection. Numbers here use `--backend=c` for that reason.)
+- **kaikai's `Array` barely beats its list on memory, not on the counting.**
+  The array itself is one allocation (`alloc_total` stays ~15 for 1M elements),
+  so the layout is right; the residual cost is per-access reference counting on
+  the boxed `Point` elements. Reading `arr[i]` costs a balanced incref/decref
+  per touch on a record array — the cache-friendly layout is eaten by that
+  per-access counting, not by a bug.
 
 ## Where Rust wins / the trade-off
 

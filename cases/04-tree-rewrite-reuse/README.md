@@ -10,8 +10,8 @@ explicitly with `Rc::make_mut`.
 > History note: on kaikai 0.94 the native backend had a soundness bug here — it
 > reused nodes in place even when the value was shared, corrupting the original
 > ([lnds/kaikai#995](https://github.com/lnds/kaikai/issues/995)). That bug is
-> **fixed as of 0.98**; native and C now agree and both are correct. The case is
-> re-verified below against 0.98.
+> **fixed as of 0.98** and still fixed on 0.99; native and C now agree and both
+> are correct. The case is re-verified below against 0.99.
 
 ## Part 1 — in-place reuse for free (unique owner)
 
@@ -115,22 +115,26 @@ kai build --backend=c      aliased_corruption.kai -o t && ./t   # before=6 orig_
 
 ## Performance at scale (depth-20 tree ≈ 2.1M nodes)
 
-Rewriting every leaf of a `build(20)` tree — 2,097,151 internal nodes — and
-summing the result. `--release`, min of several warm runs, `KAI_TRACE_RC` for
-allocation behavior:
+Rewriting every leaf of a `build(d)` tree and summing the result. `--release`,
+min of several warm runs, `KAI_TRACE_RC` for allocation behavior. Verified on
+**kaikai 0.99.0**:
 
-| | wall-clock | `reuse_in_place` | fresh allocations |
-|---|---:|---:|---:|
-| kaikai native | ~0.08 s | 2,097,151 | ~0 |
-| kaikai C      | ~0.03 s | 2,097,151 | ~0 |
+| | depth-20 (~2.1M nodes) | depth-22 (~8.4M nodes) | `reuse_in_place` | fresh allocations |
+|---|---:|---:|---:|---:|
+| kaikai native | ~0.03 s | ~0.13 s | full (all nodes) | ~0 |
+| kaikai C      | ~0.03 s | ~0.11 s | full (all nodes) | ~0 |
 
-Every one of the ~2.1M nodes is reused in place (`reuse_in_place=2097151`,
-`leaked=3`) — the whole rewrite runs with essentially **no new allocation**,
-which is the Perceus win the source never had to ask for. (Unlike case 6, the
-tree is an ADT `Leaf|Node`, not a record, so it is unaffected by the native
-record leak #1048 — `leaked` stays at 3.) The C backend is ~2.5× faster than
-native on this workload, a codegen gap worth noting but orthogonal to the
-reuse story.
+Every one of the nodes is reused in place (`reuse_in_place=2097151` at depth 20,
+`=8388607` at depth 22; `leaked=4`) — the whole rewrite runs with essentially
+**no new allocation**, which is the Perceus win the source never had to ask for.
+(Unlike case 6, the tree is an ADT `Leaf|Node`, not a value in an `Array`, so it
+is unaffected by the residual native leak #1048 — `leaked` stays at 4.)
+
+**Native codegen caught up on 0.99.** On 0.98 the C backend was ~2.5× faster
+than native on this workload; on 0.99 they are within ~1.2× (native 0.13 s vs C
+0.11 s at 8.4M nodes), the gap having largely closed. The reuse story is
+unchanged — both do full in-place reuse — but the earlier throughput asterisk
+against native is now small.
 
 Rust's `Rc::make_mut` achieves the same zero-allocation reuse on the
 unique-owner path; the difference remains ergonomic (kaikai infers it; Rust

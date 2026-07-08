@@ -1,0 +1,31 @@
+import os.args
+import core.string
+import array
+
+type Point = { x: Int, y: Int }
+
+fn fill(a: Array[Point], i: Int, n: Int) : Unit / Mutable = {
+  if i >= n { () }
+  else {
+    let k = n - i
+    array_set(a, i, Point { x: k, y: k * 2 })
+    fill(a, i + 1, n)
+  }
+}
+
+fn sum_x(a: Array[Point], i: Int, n: Int, acc: Int) : Int = {
+  if i >= n { acc }
+  else { sum_x(a, i + 1, n, acc + a[i].x) }
+}
+
+fn main() : Int / Stdout + Env + Mutable = {
+  let n = match args.argv() {
+    [s, ..._] -> match string.to_int(s) { Some(v) -> v ; None -> 1000 }
+    []        -> 1000
+  }
+  let a = array_make(n, Point { x: 0, y: 0 })
+  fill(a, 0, n)
+  let total = sum_x(a, 0, n, 0)
+  Stdout.print("total=#{int_to_string(total)}")
+  0
+}

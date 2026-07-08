@@ -1,0 +1,30 @@
+import os.args
+import core.string
+
+type Tree = Leaf(Int) | Node(Tree, Tree)
+
+fn build(d: Int) : Tree {
+  if d <= 0 { Leaf(1) }
+  else { Node(build(d - 1), build(d - 1)) }
+}
+
+fn inc_leaves(t: Tree) : Tree {
+  case Leaf(n)    -> Leaf(n + 1)
+  case Node(l, r) -> Node(inc_leaves(l), inc_leaves(r))
+}
+
+fn sumt(t: Tree) : Int {
+  case Leaf(n)    -> n
+  case Node(l, r) -> sumt(l) + sumt(r)
+}
+
+fn main() : Int / Stdout + Env = {
+  let d = match args.argv() {
+    [s, ..._] -> match string.to_int(s) { Some(v) -> v ; None -> 20 }
+    []        -> 20
+  }
+  let t  = build(d)
+  let t2 = inc_leaves(t)
+  Stdout.print("sum=#{int_to_string(sumt(t2))}")
+  0
+}
