@@ -113,32 +113,45 @@ kai build --backend=native aliased_corruption.kai -o t && ./t   # before=6 orig_
 kai build --backend=c      aliased_corruption.kai -o t && ./t   # before=6 orig_after=6 new=9
 ```
 
+The `## Performance` table uses depth-parametrized versions (N from `argv`):
+
+```sh
+rustc --edition 2024 -O rust/bench_makemut.rs -o /tmp/bm && /tmp/bm 22   # sum=8388608
+kai build --release kaikai/bench_tree.kai     -o /tmp/bt && /tmp/bt 22   # sum=8388608
+```
+
 ## Performance at scale (depth-20 tree ≈ 2.1M nodes)
 
-Rewriting every leaf of a `build(d)` tree and summing the result. `--release`,
-min of several warm runs, `KAI_TRACE_RC` for allocation behavior. Verified on
-**kaikai 0.99.0**:
+Rewriting every leaf of a `build(d)` tree and summing the result, unique-owner
+path (`rustc -O` with `black_box`, kaikai `--release`); min of several warm
+runs, `KAI_TRACE_RC` for allocation behavior. N is read from `argv` so `rustc`
+cannot constant-fold. Verified on **kaikai 0.99.0 / rustc 1.92.0**:
 
-| | depth-20 (~2.1M nodes) | depth-22 (~8.4M nodes) | `reuse_in_place` | fresh allocations |
-|---|---:|---:|---:|---:|
-| kaikai native | ~0.03 s | ~0.13 s | full (all nodes) | ~0 |
-| kaikai C      | ~0.03 s | ~0.11 s | full (all nodes) | ~0 |
+| | depth-20 (~2.1M nodes) | depth-22 (~8.4M nodes) | reuse / allocation |
+|---|---:|---:|---|
+| Rust `Rc::make_mut` (`-O`) | ~0.04 s | ~0.17 s | in-place when `strong_count==1`, ~0 alloc |
+| kaikai native              | ~0.03 s | ~0.13 s | `reuse_in_place` = all nodes, ~0 alloc |
+| kaikai C                   | ~0.03 s | ~0.11 s | `reuse_in_place` = all nodes, ~0 alloc |
 
-Every one of the nodes is reused in place (`reuse_in_place=2097151` at depth 20,
-`=8388607` at depth 22; `leaked=4`) — the whole rewrite runs with essentially
-**no new allocation**, which is the Perceus win the source never had to ask for.
-(Unlike case 6, the tree is an ADT `Leaf|Node`, not a value in an `Array`, so it
-is unaffected by the residual native leak #1048 — `leaked` stays at 4.)
+**The three land within a whisker of each other** — this is the point, not a
+kaikai throughput win. On the unique-owner path both languages converge on the
+*same algorithm*: mutate the existing nodes in place, allocate nothing. Rust
+does it because you wrote `Rc::make_mut`; kaikai does it because Perceus saw the
+value was uniquely owned. Same work, same speed; the difference is who asked for
+it. (kaikai edging ahead here is within cross-language timing noise; the honest
+claim is parity, not a lead.)
+
+Every one of kaikai's nodes is reused in place (`reuse_in_place=2097151` at
+depth 20, `=8388607` at depth 22; `leaked=4`) — essentially **no new
+allocation**, the Perceus win the source never had to ask for. (Unlike case 6,
+the tree is an ADT `Leaf|Node`, not a value in an `Array`, so it is unaffected
+by the residual native leak #1048 — `leaked` stays at 4.)
 
 **Native codegen caught up on 0.99.** On 0.98 the C backend was ~2.5× faster
 than native on this workload; on 0.99 they are within ~1.2× (native 0.13 s vs C
 0.11 s at 8.4M nodes), the gap having largely closed. The reuse story is
 unchanged — both do full in-place reuse — but the earlier throughput asterisk
 against native is now small.
-
-Rust's `Rc::make_mut` achieves the same zero-allocation reuse on the
-unique-owner path; the difference remains ergonomic (kaikai infers it; Rust
-spells it), not a throughput gap in kaikai's favor.
 
 ## Where Rust wins / the trade-off
 
