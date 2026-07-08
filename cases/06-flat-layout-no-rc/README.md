@@ -125,11 +125,12 @@ Two things changed since the 0.98 pass and both are reflected here:
 1. **The native record leak ([#1048](https://github.com/lnds/kaikai/issues/1048))
    no longer inflates these numbers.** On 0.99 short-lived records and records
    in a `[T]` list free correctly on native. A residual leak remains for boxed
-   values *retained in an `Array`* (`Array[Point]` shows `leaked≈N`), but for
-   this workload it is **benign**: the array lives to program end, so nothing
-   accumulates — native peak RSS lands within a few percent of C. So the kaikai
-   numbers below use the **default native backend**; the C column is kept only
-   to show the codegen delta, not for memory honesty.
+   values *retained in an `Array`* (`Array[Point]` shows `leaked≈N`; filed as
+   [#1112](https://github.com/lnds/kaikai/issues/1112)), but for this workload it
+   is **benign**: the array lives to program end, so nothing accumulates —
+   native peak RSS lands within a few percent of C. So the kaikai numbers below
+   use the **default native backend**; the C column is kept only to show the
+   codegen delta, not for memory honesty.
 2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
    are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
    (64 MB on macOS). That is a property of the naive recursive shape, not the

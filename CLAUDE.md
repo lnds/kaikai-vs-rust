@@ -55,7 +55,10 @@ as the record of why the repo runs every claim.
     `leaked≈N`, `free_total≈1`; `Array[Int]` (unboxed) is fine. So it is not
     record-specific anymore; it is "`array_make` of a boxed element type never
     decrefs its slots on native." Different scope from the original #1048 (which
-    was record-specific and spared variants) — worth a fresh comment/issue.
+    was record-specific and spared variants) — filed separately as
+    **[#1112](https://github.com/lnds/kaikai/issues/1112)** (open). A churn
+    workload (build+discard 10k arrays of 10k records) leaks 100M records =
+    7 GB native vs 2 MB C, so it is unbounded, not cleanup-at-exit.
   - This leak is **benign for RSS when the array is long-lived** (case 6's
     workload): the records live to program end anyway, so native RSS ≈ C RSS.
     That is why the **case 6 table no longer needs `--backend=c`** — native is

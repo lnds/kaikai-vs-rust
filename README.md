@@ -129,12 +129,14 @@ short-lived records took 768 MB on native versus 1 MB on `--backend=c`. **On
 and records in a linked list now free correctly on native (10M short-lived
 records → 1 MB), but a residual leak remains for boxed values *retained in an
 `Array`* — and it is no longer record-specific (`Array` of an ADT variant leaks
-too). For case 6's workload the array lives to program end, so the leak is
-benign for peak RSS and native now matches C — which is why the tables no longer
-need `--backend=c`. The candidate "arrays of records are slow" finding from 0.98
-resolved into exactly this: not a throughput bug but a retained-`Array` leak
-plus ordinary per-access reference counting. Chasing a weak claim to its precise
-scope is the methodology working too.
+too), so it was filed separately as
+[#1112](https://github.com/lnds/kaikai/issues/1112). For case 6's workload the
+array lives to program end, so the leak is benign for peak RSS and native now
+matches C — which is why the tables no longer need `--backend=c`. The candidate
+"arrays of records are slow" finding from 0.98 resolved into exactly this: not a
+throughput bug but a retained-`Array` leak plus ordinary per-access reference
+counting. Chasing a weak claim to its precise scope is the methodology working
+too.
 
 > On the compiler moving under you: the GitHub API reports #1048 `CLOSED`, but
 > its comments show it was **reopened** — a fix landed, was reverted to unblock
