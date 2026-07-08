@@ -71,17 +71,19 @@ Run with the RC tracer (`KAI_TRACE_RC=1 kai run layout.kai`):
 
 ```text
 total=500500
-[KAI_TRACE_RC] alloc_total=3005 free_total=2002 leaked=1003 live_peak=2001
+[KAI_TRACE_RC] alloc_total=3005 free_total=3002 leaked=3 live_peak=2001
 [KAI_TRACE_RC]   tag cons    allocs=2002
 [KAI_TRACE_RC]   tag record  allocs=1000
-[KAI_TRACE_RC]   incref_total=3998 decref_total=6000
+[KAI_TRACE_RC]   incref_total=3998 decref_total=7000
 ```
 
 For the same 1000 points: **~3000 allocations** (1000 `Point` records + ~2000
-linked-list `cons` cells) and **~10000 reference-count operations**
-(`incref` + `decref`). And `[Point]` is a **linked list**, not a contiguous
-buffer — each element is a separate heap node with its own count, not 16
-inline bytes in one block.
+linked-list `cons` cells) and **~11000 reference-count operations**
+(`incref_total=3998` + `decref_total=7000`). And `[Point]` is a **linked list**,
+not a contiguous buffer — each element is a separate heap node with its own
+count, not 16 inline bytes in one block. (`leaked=3` is just the three format
+strings; on 0.99 the list records free correctly on native — the 0.98 trace here
+showed `leaked=1003`, which was the #1048 record leak, now gone for this shape.)
 
 > Caveat, stated honestly: this is the naive idiomatic form on both sides.
 > kaikai has an `Array[T]` for contiguous storage and a `region { }` block
