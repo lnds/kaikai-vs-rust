@@ -17,9 +17,17 @@ every signature on the path**.
 > executor. And swapping the real handler for a test stub changes **no**
 > signature anywhere.
 >
-> The concession: Rust's `async`/trait bounds are **explicit and auditable**
-> at every signature; kaikai infers effect rows in local bodies, so a
-> function's true effect set can be less obvious at a glance.
+> The concession is narrower than it first looks. Every *named* function in
+> kaikai — `pub` or not — must declare its full effect row: omitting `/ Stdout`
+> from a function that calls `Stdout.print` is a compile error ("effect not
+> handled"). Inference applies only to *local* `let`/closure bodies, which have
+> no public signature to audit. The one place a named signature does not spell
+> out a concrete effect is a **row-polymorphic** parameter (`/ e`) — and that is
+> the exact analogue of a Rust generic (`<F: Fn(..)>`): the concrete effect is
+> resolved at the call site in both languages. So on auditability they are
+> closer to even than "Rust is explicit, kaikai infers" suggests. Rust's real
+> edge is elsewhere (next section): `async` is not just a label, it names an
+> execution model.
 
 ## Rust — the `async` colour is viral
 
@@ -114,11 +122,17 @@ kai run swap_handlers.kai                              # [audit]… result=18
 
 ## Where Rust wins / the trade-off
 
-- **Auditability.** Rust's `async` and trait bounds are written at every
-  signature. You can read a function's type and know exactly what it needs
-  and whether it suspends. kaikai infers rows in local bodies; a `pub`
-  signature must annotate them, but inside a module the effect set is
-  inferred, so "what can this actually do" can be less immediately visible.
+- **Auditability — closer to even than it sounds, with one Rust edge.** It is
+  tempting to say "Rust writes it at every signature, kaikai infers it" — but
+  that overstates the gap. Every *named* kaikai function, `pub` or private,
+  must declare its full row: a body that calls `Stdout.print` under a `: Int`
+  signature is rejected (`effect not handled: Stdout`, "declared row does not
+  include `Stdout`"). Inference is confined to *local* `let`/closure bodies,
+  which have no signature to read anyway. A row-polymorphic `/ e` parameter
+  does abstract over the concrete effect — but so does a Rust generic bound, and
+  both resolve it at the call site, so that is a wash. Where Rust genuinely wins
+  the audit is the *next* bullet: `async` in a signature promises an execution
+  model, not just "an effect happens here".
 - **`async` carries a real execution model.** Rust's colour is viral partly
   because it is *honest*: an `async fn` returns a state machine you can
   schedule, cancel, select over, and run on a chosen executor. kaikai's
