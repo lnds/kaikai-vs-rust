@@ -10,7 +10,7 @@ fn sum_x(xs: [Point]) : Int {
 
 fn build(n: Int) : [Point] {
   case 0 -> []
-  case k -> [Point { x: k, y: k * 2 }] ++ build(k - 1)
+  case k -> [Point { x: k, y: k * 2 }, ...build(k - 1)]
 }
 
 fn main() : Int / Stdout + Env = {

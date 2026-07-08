@@ -60,30 +60,41 @@ count anywhere in this program.
 ```kaikai
 type Point = { x: Int, y: Int }
 
-fn sum_x(xs: [Point]) : Int { case [] -> 0 ; case [h, ...t] -> h.x + sum_x(t) }
-fn build(n: Int) : [Point] {
-  case 0 -> []
-  case k -> [Point { x: k, y: k * 2 }] ++ build(k - 1)
+fn main() : Int / Stdout = {
+  let pts = [1..1000] | (k => Point { x: k, y: k * 2 })
+  let total = pts | (.x) |> list.sum
+  Stdout.print("total=#{int_to_string(total)}")
+  0
 }
 ```
 
-Run with the RC tracer (`KAI_TRACE_RC=1 kai run layout.kai`):
+This is the idiomatic form: a range mapped to records, then a field projection
+summed — no hand-written recursion. Run with the RC tracer
+(`KAI_TRACE_RC=1 kai run layout.kai`):
 
 ```text
 total=500500
-[KAI_TRACE_RC] alloc_total=3005 free_total=3002 leaked=3 live_peak=2001
-[KAI_TRACE_RC]   tag cons    allocs=2002
+[KAI_TRACE_RC] alloc_total=6007 free_total=5004 leaked=1003 live_peak=2001
+[KAI_TRACE_RC]   tag cons    allocs=5002
 [KAI_TRACE_RC]   tag record  allocs=1000
-[KAI_TRACE_RC]   incref_total=3998 decref_total=7000
+[KAI_TRACE_RC]   incref_total=15995 decref_total=20999
 ```
 
-For the same 1000 points: **~3000 allocations** (1000 `Point` records + ~2000
-linked-list `cons` cells) and **~11000 reference-count operations**
-(`incref_total=3998` + `decref_total=7000`). And `[Point]` is a **linked list**,
-not a contiguous buffer — each element is a separate heap node with its own
-count, not 16 inline bytes in one block. (`leaked=3` is just the three format
-strings; on 0.99 the list records free correctly on native — the 0.98 trace here
-showed `leaked=1003`, which was the #1048 record leak, now gone for this shape.)
+For the same 1000 points: 1000 `Point` records + several thousand linked-list
+`cons` cells, and **~37000 reference-count operations** (`incref_total=15995` +
+`decref_total=20999`). `[Point]` is a **linked list**, not a contiguous buffer —
+each element is a separate heap node with its own count, not 16 inline bytes in
+one block. That per-node RC is the cost the case is about, and Rust's `Vec` pays
+none of it.
+
+> Honest caveat on the trace: `leaked=1003` here is **a real compiler bug**, not
+> the workload — the record-projecting map `| (.x)` currently fails to free its
+> input records ([lnds/kaikai#1117](https://github.com/lnds/kaikai/issues/1117)),
+> on both backends. It was found *by* writing this example idiomatically. The
+> `total` is still correct; the leak inflates the RC counts above. The point of
+> the case — per-node reference counting on a linked list vs Rust's zero — stands
+> regardless, and the at-scale table below sidesteps #1117 by using the `Array`
+> form.
 
 > Caveat, stated honestly: this is the naive idiomatic form on both sides.
 > kaikai has an `Array[T]` for contiguous storage and a `region { }` block

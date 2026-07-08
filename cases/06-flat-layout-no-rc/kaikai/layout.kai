@@ -1,4 +1,4 @@
-import array
+import core.list
 
 # A flat record processed in bulk. In Rust this is a Vec<Point> with zero
 # reference counting: contiguous, owned, freed in one shot. In kaikai every
@@ -7,19 +7,12 @@ import array
 
 type Point = { x: Int, y: Int }
 
-fn sum_x(xs: [Point]) : Int {
-  case []        -> 0
-  case [h, ...t] -> h.x + sum_x(t)
-}
-
-fn build(n: Int) : [Point] {
-  case 0 -> []
-  case k -> [Point { x: k, y: k * 2 }] ++ build(k - 1)
-}
-
 fn main() : Int / Stdout = {
-  let pts = build(1000)
-  let total = sum_x(pts)
+  let pts = [1..1000] | (k => Point { x: k, y: k * 2 })
+  # The record-projecting map `| (.x)` leaks its input records today
+  # (lnds/kaikai#1117), which inflates the RC trace below — the leak is the
+  # compiler's, not the workload's.
+  let total = pts | (.x) |> list.sum
   Stdout.print("total=#{int_to_string(total)}")
   0
 }
