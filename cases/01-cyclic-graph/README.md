@@ -8,8 +8,8 @@
 > graph (E0506). The safe way out is `Rc<RefCell<Option<Rc<Node>>>>` plus
 > `Weak`: reference counting at **runtime**, plus reasoning by hand about
 > where to put the `Weak` so the cycle does not leak. kaikai expresses the
-> same graph with a mutable `Ref[Slot]` cell tracked by the `Mutable` effect —
-> it never builds a strong RC cycle, so there is no `Weak` to place.
+> same graph with a mutable `Ref[Option[Node]]` cell tracked by the `Mutable`
+> effect — it never builds a strong RC cycle, so there is no `Weak` to place.
 
 Note what the claim is **not**: it is *not* "Rust can't do this". Rust does
 it (see [`rust/cycle_rc_works.rs`](rust/cycle_rc_works.rs), which compiles
@@ -81,14 +81,13 @@ runtime memory leak, not a compile error.
 [`kaikai/cycle.kai`](kaikai/cycle.kai) — compiles and runs:
 
 ```kaikai
-type Slot = Empty | Has(Node)
-type Node = { id: Int, next: Ref[Slot] }   # first-class mutable reference cell
+type Node = { id: Int, next: Ref[Option[Node]] }   # first-class mutable reference cell
 
 fn main() : Int / Stdout + Mutable = {
   let a = make_node(1)
   let b = make_node(2)
-  a.next.set(Has(b))
-  b.next.set(Has(a))    # cycle a <-> b
+  a.next.set(Some(b))
+  b.next.set(Some(a))    # cycle a <-> b
   // walk 6 steps ...
 }
 ```
@@ -101,15 +100,15 @@ is that the cyclic shape is two direct writes with no `Weak`/strong distinction
 to get right, because kaikai is not building a strong-RC cycle to begin with.
 
 > A wrinkle worth naming, since it is the honest reason the write reads as
-> `a.next.set(Has(b))` and not `a.next := Has(b)`: the `:=` sugar does **not**
+> `a.next.set(Some(b))` and not `a.next := Some(b)`: the `:=` sugar does **not**
 > currently accept a `Ref`-typed record field as its target, even though it
 > accepts a bare `Ref` binding (`r := v`) and an `Array` cell in a field
 > (`n.next[0] := v`). That gap is filed as
 > [lnds/kaikai#1113](https://github.com/lnds/kaikai/issues/1113). `Ref` is still
 > the right primitive here — a first-class mutable reference to a node — so the
 > case uses it via the explicit `.set(…)` write; an earlier draft modeled the
-> slot as a one-cell `Array[Slot]` purely to reach the `[0]`-indexed form `:=`
-> allows, which was a workaround for #1113, not a modeling choice.
+> slot as a one-cell `Array[Option[Node]]` purely to reach the `[0]`-indexed
+> form `:=` allows, which was a workaround for #1113, not a modeling choice.
 
 ## Reproduce
 

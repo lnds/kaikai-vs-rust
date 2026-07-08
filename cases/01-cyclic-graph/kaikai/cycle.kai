@@ -1,20 +1,19 @@
 import loop
 
-type Slot = Empty | Has(Node)
-type Node = { id: Int, next: Ref[Slot] }
+type Node = { id: Int, next: Ref[Option[Node]] }
 
-fn make_node(id: Int) : Node / Mutable = Node { id: id, next: Mutable.ref_make(Empty) }
+fn make_node(id: Int) : Node / Mutable = Node { id: id, next: Mutable.ref_make(None) }
 
 fn step(n: Node) : Node / Mutable = match Mutable.ref_get(n.next) {
-  Has(m) -> m
-  Empty  -> n
+  Some(m) -> m
+  None    -> n
 }
 
 fn main() : Int / Stdout + Mutable = {
   let a = make_node(1)
   let b = make_node(2)
-  a.next.set(Has(b))
-  b.next.set(Has(a))
+  a.next.set(Some(b))
+  b.next.set(Some(a))
 
   var cur := a
   var steps := 0

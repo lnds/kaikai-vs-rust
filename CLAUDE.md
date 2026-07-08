@@ -126,7 +126,7 @@ a pipe — `139` = SIGSEGV. RC behavior: `KAI_TRACE_RC=1 ./bin` prints
   shared `var`.
 - `Ref[T]` is a first-class mutable heap cell (`Mutable.ref_make/ref_get/
   ref_set`, or `.set(v)`/`.get()` via UFCS) — the right primitive for "a mutable
-  slot inside a record" (case 1 uses `next: Ref[Slot]`). This is *not* a
+  slot inside a record" (case 1 uses `next: Ref[Option[Node]]`). This is *not* a
   Rust-style interior `&'a self` reference; the discarded self-referential case
   is about that borrow-shaped aliasing, not about `Ref`.
 - **`:=` gotcha:** the sugar accepts a bare capability/`Ref` binding (`r := v`),
