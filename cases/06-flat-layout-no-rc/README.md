@@ -74,27 +74,27 @@ summed — no hand-written recursion. Run with the RC tracer
 
 ```text
 total=500500
-[KAI_TRACE_RC] alloc_total=6007 free_total=5004 leaked=1003 live_peak=2001
+[KAI_TRACE_RC] alloc_total=6007 free_total=6004 leaked=3 live_peak=2001
 [KAI_TRACE_RC]   tag cons    allocs=5002
 [KAI_TRACE_RC]   tag record  allocs=1000
-[KAI_TRACE_RC]   incref_total=15995 decref_total=20999
+[KAI_TRACE_RC]   incref_total=15995 decref_total=21999
 ```
 
 For the same 1000 points: 1000 `Point` records + several thousand linked-list
-`cons` cells, and **~37000 reference-count operations** (`incref_total=15995` +
-`decref_total=20999`). `[Point]` is a **linked list**, not a contiguous buffer —
+`cons` cells, and **~38000 reference-count operations** (`incref_total=15995` +
+`decref_total=21999`). `[Point]` is a **linked list**, not a contiguous buffer —
 each element is a separate heap node with its own count, not 16 inline bytes in
 one block. That per-node RC is the cost the case is about, and Rust's `Vec` pays
 none of it.
 
-> Honest caveat on the trace: `leaked=1003` here is **a real compiler bug**, not
-> the workload — the record-projecting map `| (.x)` currently fails to free its
-> input records ([lnds/kaikai#1117](https://github.com/lnds/kaikai/issues/1117)),
-> on both backends. It was found *by* writing this example idiomatically. The
-> `total` is still correct; the leak inflates the RC counts above. The point of
-> the case — per-node reference counting on a linked list vs Rust's zero — stands
-> regardless, and the at-scale table below sidesteps #1117 by using the `Array`
-> form.
+> History note on the trace: on kaikai 0.99.0 this same program showed
+> `leaked=1003` — a real compiler bug where the record-projecting map `| (.x)`
+> failed to free its input records
+> ([lnds/kaikai#1117](https://github.com/lnds/kaikai/issues/1117)), found *by*
+> writing this example idiomatically. **It is fixed as of 0.99.1** (`leaked=3` —
+> just the format strings). The point of the case — per-node reference counting
+> on a linked list vs Rust's zero — was always the real content; the leak was a
+> transient bug on top of it.
 
 > Caveat, stated honestly: this is the naive idiomatic form on both sides.
 > kaikai has an `Array[T]` for contiguous storage and a `region { }` block
@@ -131,19 +131,23 @@ The op-count above predicts a cost; here is the measured one. Same machine
 (macOS arm64), Rust `-O` with `black_box`, kaikai `--release` (`-O2`);
 wall-clock is the min of 6 warm runs, RSS is peak resident set from
 `/usr/bin/time -l`. N is read from `argv` so `rustc` cannot constant-fold the
-answer. Verified on **kaikai 0.99.0** / **rustc 1.92.0**.
+answer. Verified on **kaikai 0.99.1** / **rustc 1.92.0**.
 
-Two things changed since the 0.98 pass and both are reflected here:
+Two things shape these numbers:
 
-1. **The native record leak ([#1048](https://github.com/lnds/kaikai/issues/1048))
-   no longer inflates these numbers.** On 0.99 short-lived records and records
-   in a `[T]` list free correctly on native. A residual leak remains for boxed
-   values *retained in an `Array`* (`Array[Point]` shows `leaked≈N`; filed as
-   [#1112](https://github.com/lnds/kaikai/issues/1112)), but for this workload it
-   is **benign**: the array lives to program end, so nothing accumulates —
-   native peak RSS lands within a few percent of C. So the kaikai numbers below
-   use the **default native backend**; the C column is kept only to show the
-   codegen delta, not for memory honesty.
+1. **RC leaks around record arrays have moved across versions — read the trace,
+   not the version tag.** The `Array[Point]` benchmark *fills* the array
+   (`a[i] := ...`) and *reads it back* (`a[i].x`). On 0.98 the fill leaked
+   ([#1048](https://github.com/lnds/kaikai/issues/1048)/[#1112](https://github.com/lnds/kaikai/issues/1112));
+   0.99.1 fixed the fill path, but the same release regressed the **read** path —
+   `a[i].field` in a loop now leaks the record on both backends
+   ([#1126](https://github.com/lnds/kaikai/issues/1126)). For *this* workload the
+   leak is **benign for the ratio**: the array lives to program end, so the
+   records were going to occupy memory anyway — `leaked≈N` inflates the RC counts
+   but native peak RSS still lands within a few percent of C. The numbers below
+   use the **default native backend**; the C column shows the codegen delta. (A
+   workload that builds and *discards* record arrays in a loop would grow RSS
+   without bound under #1126 — re-check when it closes.)
 2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
    are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
    (64 MB on macOS). That is a property of the naive recursive shape, not the

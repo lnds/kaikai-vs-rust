@@ -125,7 +125,7 @@ kai build --release kaikai/bench_tree.kai     -o /tmp/bt && /tmp/bt 22   # sum=8
 Rewriting every leaf of a `build(d)` tree and summing the result, unique-owner
 path (`rustc -O` with `black_box`, kaikai `--release`); min of several warm
 runs, `KAI_TRACE_RC` for allocation behavior. N is read from `argv` so `rustc`
-cannot constant-fold. Verified on **kaikai 0.99.0 / rustc 1.92.0**:
+cannot constant-fold. Verified on **kaikai 0.99.1 / rustc 1.92.0**:
 
 | | depth-20 (~2.1M nodes) | depth-22 (~8.4M nodes) | reuse / allocation |
 |---|---:|---:|---|

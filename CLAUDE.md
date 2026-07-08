@@ -12,7 +12,7 @@ remote, no push — the owner reviews and publishes).
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.0**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.1**.
 
 ### Case status (who wins)
 
@@ -61,13 +61,39 @@ as the record of why the repo runs every claim.
     7 GB native vs 2 MB C, so it is unbounded, not cleanup-at-exit.
   - This leak is **benign for RSS when the array is long-lived** (case 6's
     workload): the records live to program end anyway, so native RSS ≈ C RSS.
-    That is why the **case 6 table no longer needs `--backend=c`** — native is
-    now honest for that shape. It would still inflate RSS in a workload that
-    builds and discards many arrays-of-boxed in a loop.
+
+### Status on 0.99.1 (re-verified by measurement)
+
+Four of the issues this repo filed were fixed in 0.99.1, all `COMPLETED` with
+PRs (not auto-close-by-revert like #1048 was — verify anyway):
+
+- **#1112** (`Array[boxed]` fill leak) — **fixed**. `Array[Record]` fill is now
+  `leaked=1`, `free_total≈N`.
+- **#1113** (`:=` on a `Ref` field) — **fixed** (PR #1116). The full `Ref` sugar
+  shipped: `&x` makes a Ref, `@r` derefs, `r := v` / `record.field := v` sets.
+  Case 1 now uses `next: &None` / `@n.next` / `a.next := Some(b)`.
+- **#1117** (map pipe over records leaks input) — **fixed** (PR #1122). Case 6
+  `layout.kai` trace went `leaked=1003` → `leaked=3`.
+- **#1120** (borrow annotations on `array_get`) — **partially shipped** (PR
+  #1125). The *array* incref/decref around each access is now elided (`decref`
+  constant instead of per-access). But `array_get` still increfs the *element*,
+  and step 3 (cancel the element dup/drop when consumed) did NOT land — so wall
+  time did not move (still ~0.17s vs Koka 0.02s on `Array[Int]` at 10M), and it
+  introduced a regression (next item).
+- **#1126** (NEW regression, open) — reading `a[i].field` from an `Array[Record]`
+  in a loop now **leaks the record** on both backends, `leaked≈N`. Caused by
+  #1120: the array-count elision left the element incref unbalanced on the read
+  path for boxed elements. `Array[Int]` fine. Distinct from #1112 (fill path,
+  fixed) and #1117 (map pipe, fixed). This is the current live leak on the case-6
+  Array workload.
+
+Still open (design proposals, not bugs): **#1121** (value records +
+monomorphization), **#1123** (`kind Region` — escaping arenas as a kind).
 
 If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
 snapshot of the compiler and can move. Check state with
-`gh issue view <N> --repo lnds/kaikai --json state`.
+`gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
+(#1048 was CLOSED-but-reopened).
 
 ## Benchmarking notes
 

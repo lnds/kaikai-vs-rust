@@ -83,11 +83,15 @@ runtime memory leak, not a compile error.
 ```kaikai
 type Node = { id: Int, next: Ref[Option[Node]] }   # first-class mutable reference cell
 
+fn make_node(id: Int) : Node / Mutable = Node { id: id, next: &None }   # `&` builds a Ref
+
+fn step(n: Node) : Node / Mutable = match @n.next { ... }               # `@` derefs a Ref
+
 fn main() : Int / Stdout + Mutable = {
   let a = make_node(1)
   let b = make_node(2)
-  a.next.set(Some(b))
-  b.next.set(Some(a))    # cycle a <-> b
+  a.next := Some(b)
+  b.next := Some(a)    # cycle a <-> b
   // walk 6 steps ...
 }
 ```
@@ -99,16 +103,12 @@ function's effect row, and the compiler enforces that. The difference from Rust
 is that the cyclic shape is two direct writes with no `Weak`/strong distinction
 to get right, because kaikai is not building a strong-RC cycle to begin with.
 
-> A wrinkle worth naming, since it is the honest reason the write reads as
-> `a.next.set(Some(b))` and not `a.next := Some(b)`: the `:=` sugar does **not**
-> currently accept a `Ref`-typed record field as its target, even though it
-> accepts a bare `Ref` binding (`r := v`) and an `Array` cell in a field
-> (`n.next[0] := v`). That gap is filed as
-> [lnds/kaikai#1113](https://github.com/lnds/kaikai/issues/1113). `Ref` is still
-> the right primitive here — a first-class mutable reference to a node — so the
-> case uses it via the explicit `.set(…)` write; an earlier draft modeled the
-> slot as a one-cell `Array[Option[Node]]` purely to reach the `[0]`-indexed
-> form `:=` allows, which was a workaround for #1113, not a modeling choice.
+> `Ref[T]` has first-class surface sugar: `&x` builds a reference, `@r` derefs
+> it, and `r := v` (or `record.field := v`) writes it. On kaikai 0.99.0 the
+> `:=` sugar did not yet accept a `Ref`-typed record field, so an earlier draft
+> of this case used the explicit `Mutable.ref_set` / one-cell `Array` workaround;
+> [lnds/kaikai#1113](https://github.com/lnds/kaikai/issues/1113) shipped that
+> sugar in 0.99.1, so the case now reads as the two direct `:=` writes above.
 
 ## Reproduce
 
