@@ -9,9 +9,6 @@ type Point = { x: Int, y: Int }
 
 fn main() : Int / Stdout = {
   let pts = [1..1000] | (k => Point { x: k, y: k * 2 })
-  # The record-projecting map `| (.x)` leaks its input records today
-  # (lnds/kaikai#1117), which inflates the RC trace below — the leak is the
-  # compiler's, not the workload's.
   let total = pts | (.x) |> list.sum
   Stdout.print("total=#{int_to_string(total)}")
   0

@@ -1,0 +1,21 @@
+import os.args
+import core.string
+import collections.vec
+
+type Point = { x: Int, y: Int }
+
+fn fill(v: Vec[Point], k: Int, n: Int) : Vec[Point] =
+  if k > n { v } else { fill(vec.push(v, Point { x: k, y: k * 2 }), k + 1, n) }
+
+fn sum_x(v: Vec[Point], i: Int, n: Int, acc: Int) : Int =
+  if i >= n { acc } else { sum_x(v, i + 1, n, acc + vec.get(v, i).x) }
+
+fn main() : Int / Stdout + Env = {
+  let n = match args.argv() {
+    [s, ..._] -> match string.to_int(s) { Some(v) -> v ; None -> 1000 }
+    []        -> 1000
+  }
+  let pts = fill(vec.empty(), 1, n)
+  Stdout.print("total=#{int_to_string(sum_x(pts, 0, n, 0))}")
+  0
+}

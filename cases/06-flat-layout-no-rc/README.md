@@ -96,13 +96,15 @@ none of it.
 > on a linked list vs Rust's zero — was always the real content; the leak was a
 > transient bug on top of it.
 
-> Caveat, stated honestly: this is the naive idiomatic form on both sides.
-> kaikai has an `Array[T]` for contiguous storage and a `region { }` block
-> that bump-allocates and skips RC for escape-free scratch, which would close
-> part of this gap. The point of the case is the **default** cost model: Rust's
-> default flat type is RC-free by construction; kaikai's default value is
-> reference-counted, and you opt *out* with `Array`/`region`, where Rust never
-> opted in.
+> Caveat, stated honestly: this is the naive idiomatic form on both sides,
+> and the **default** cost model is still the point: Rust's default flat type
+> is RC-free by construction; kaikai's default `[Point]` is a reference-counted
+> linked list, and you opt *out*. What changed (2026-07-09) is what the opt-out
+> buys: `Vec[T]` — the pure value vector (unboxed inline elements, one RC
+> header, in-place mutation when unique, copy-on-write when shared) — now
+> matches Rust's cost model while keeping a purely functional API, measured
+> below. Whether `[1,2,3]` should *default* to `Vec` is an open decision for
+> the kaikai 1.0 surface pin.
 
 ## Reproduce
 
@@ -123,6 +125,8 @@ rustc --edition 2024 -O rust/bench_layout.rs -o /tmp/bl && /tmp/bl 1000000
 kai build --release kaikai/bench_list.kai  -o /tmp/kl && /tmp/kl 100000
 # kaikai: Array[Point], tail-recursive — reaches 1M/10M
 kai build --release kaikai/bench_array.kai -o /tmp/ka && /tmp/ka 1000000
+# kaikai: Vec[Point] — the value vector (needs kaikai main, post-0.99.1)
+kai build --release kaikai/bench_vec.kai -o /tmp/kv && /tmp/kv 1000000
 ```
 
 ## Performance at scale
@@ -145,9 +149,9 @@ Two things shape these numbers:
    leak is **benign for the ratio**: the array lives to program end, so the
    records were going to occupy memory anyway — `leaked≈N` inflates the RC counts
    but native peak RSS still lands within a few percent of C. The numbers below
-   use the **default native backend**; the C column shows the codegen delta. (A
-   workload that builds and *discards* record arrays in a loop would grow RSS
-   without bound under #1126 — re-check when it closes.)
+   use the **default native backend**; the C column shows the codegen delta. (#1126 has since been
+   fixed — [lnds/kaikai#1128](https://github.com/lnds/kaikai/pull/1128) — the
+   discard shape reclaims again.)
 2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
    are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
    (64 MB on macOS). That is a property of the naive recursive shape, not the
@@ -169,6 +173,7 @@ Two things shape these numbers:
 | Rust `Vec<Point>` (`-O`)          | ~0.00 s | 16 MB | ~0.01 s | 154 MB |
 | kaikai `Array[Point]`, C          | ~0.05 s | 93 MB | ~0.58 s | 852 MB |
 | kaikai `Array[Point]`, native     | ~0.04 s | 85 MB | ~0.39 s | 844 MB |
+| kaikai `Vec[Point]`, C = native   | ~0.00 s | 18 MB | **0.06 s** | **155 MB** |
 
 Rust builds and sums the points below (1M) or near (10M) the timer's resolution
 in a contiguous buffer; kaikai is ~an order of magnitude slower and uses ~5×
@@ -178,6 +183,21 @@ and `alloc_total≈0.3M` (100k `Point` records + 200k `cons` cells), versus Rust
 single contiguous allocation and zero counting. (Note the native backend is now
 *faster* than C on the `Array` workload — 0.39 s vs 0.58 s at 10M — the 0.98
 codegen gap has largely closed.)
+
+**The `Vec[Point]` row (measured 2026-07-09 on kaikai `main`, post-0.99.1:
+`Vec[T]` shipped across lnds/kaikai#1142/#1147/#1152/#1154) changes the case's
+verdict.** The idiomatic surface (`import collections.vec`, `vec.push` /
+`vec.get` in plain tail-recursive user code — no internal primitives) lands at
+**0.06 s / 155 MB** at N=10M against Rust's 0.01 s / 154 MB: memory parity to
+within one percent, wall within ~6× of a `black_box`'d `rustc -O` loop — and
+**13× faster with 5.5× less memory than the boxed `Array` row above**, on a
+purely functional API with no borrow checker. The title of this case was
+"Rust wins, cleanly". As of `Vec`: Rust still wins the absolute wall; it no
+longer wins the memory model, and the gap is a small constant, not a
+complexity class. RC-op count for the whole 10M run: container and element
+traffic on the unique path is zero (in-place uniqueness), which is the point —
+the counting the borrow checker proves away, Perceus proves away at runtime
+with rc == 1.
 
 Two honest caveats:
 
