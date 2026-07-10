@@ -31,11 +31,11 @@ one.
   <file>.kai`. The pasted output is the real program output.
 - Cases 4 and 6 carry a **`## Performance`** section with measured wall-clock
   and peak RSS at N=1M+ (Rust `-O` vs kaikai `--release`), not just op counts.
-  Benchmarking these surfaced a fourth kaikai bug — a native-backend record
-  leak ([#1048](https://github.com/lnds/kaikai/issues/1048)). On 0.99 its scope
-  shrank to boxed values retained in an `Array`, which is benign for these
-  long-lived workloads, so the numbers now use the **default native backend**;
-  see the per-case notes.
+  Benchmarking these surfaced a family of native-backend leaks
+  ([#1048](https://github.com/lnds/kaikai/issues/1048)/[#1112](https://github.com/lnds/kaikai/issues/1112)/[#1126](https://github.com/lnds/kaikai/issues/1126))
+  and a value-record proposal that shipped as `Vec[T]`; **all fixed/landed as of
+  0.99.3**, re-verified by re-running. The numbers use the **default native
+  backend**; see the per-case notes.
 - The Rust shown is the version an **expert would write** — the idiomatic
   safe attempt first. Only when that genuinely fails to compile is the
   `Rc`/`Arc`/`unsafe` workaround presented. No strawmen.
@@ -63,18 +63,21 @@ one.
 | 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | even → Rust (parallelism) | One counter mutated by N tasks: **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"), pushing you to `Arc<Mutex>` / an actor. Rust still wins on real multi-core; kaikai's actor is serial. |
 | 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | kaikai (ergonomics) | Perceus reuses nodes in place when unique (`reuse_in_place=5`, no `Rc`/`make_mut`) and copies correctly when shared — both backends, on 0.99. (On 0.94 the native backend corrupted the shared case; that bug is fixed. On 0.99 native codegen also caught up to C in throughput.) |
 | 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | kaikai (ergonomics) | `async` is a viral colour in Rust; a kaikai effect row is discharged by a handler. Capability injection without rewriting signatures. |
-| 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** | Bulk flat records: `Vec<Point>` is one allocation, zero RC; kaikai pays ~10k RC ops + ~3k allocations on a linked list. |
+| 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** (wall only) | Bulk flat records. The default `[Point]` is a linked list under Perceus RC; the opt-out `Vec[Point]` (value vector, unboxed inline, in-place when unique) now matches Rust's memory model — **0.06 s / 155 MB vs Rust's 0.01 s / 154 MB at N=10M**. Rust still wins the absolute wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. |
 
 > Case numbering skips 2: the self-referential candidate was discarded (see
 > below). Each case folder has its own `README.md`, a `rust/` directory (the
 > safe version that fails **and** the version Rust forces you to write), and a
 > `kaikai/` directory (the `.kai` that compiles and runs).
 
-Note the balance: case 6 is an outright **Rust win**, and case 3 tilts to
-**Rust** on parallelism (though safety there is now a wash — both reject the
-naive attempt at compile time). Cases 1, 4, and 5 are kaikai ergonomics wins.
-That is the point — this is not a sales sheet, and the verdicts move as the
-compiler improves (case 4 was a Rust win on 0.94, a kaikai win on 0.98).
+Note the balance: case 6 still goes to **Rust**, but now only on the absolute
+wall-clock — its `Vec[T]` value vector closed the memory gap to parity, so the
+"Rust wins the layout" headline is gone. Case 3 tilts to **Rust** on
+parallelism (though safety there is now a wash — both reject the naive attempt
+at compile time). Cases 1, 4, and 5 are kaikai ergonomics wins. That is the
+point — this is not a sales sheet, and the verdicts move as the compiler
+improves (case 4 was a Rust win on 0.94, a kaikai win from 0.98; case 6 went
+from a clean Rust layout win to a Rust wall-only win once `Vec[T]` shipped).
 
 ## Discarded cases
 
@@ -122,23 +125,28 @@ the corruption as a win, once by never noticing it was fixed. Running everything
 is the methodology; the verdicts are a snapshot of the compiler as it stands,
 and they move.
 
-Then benchmarking case 6 on 0.98 surfaced a fourth bug — the native backend
-leaks record values ([#1048](https://github.com/lnds/kaikai/issues/1048)): 10M
-short-lived records took 768 MB on native versus 1 MB on `--backend=c`. **On
-0.99 that leak's scope shrank** (measured, not asserted): short-lived records
-and records in a linked list now free correctly on native (10M short-lived
-records → 1 MB), but a residual leak remains for boxed values *retained in an
-`Array`* — and it is no longer record-specific (`Array` of an ADT variant leaks
-too), so it was filed separately as
-[#1112](https://github.com/lnds/kaikai/issues/1112). For case 6's workload the
-array lives to program end, so the leak is benign for peak RSS and native now
-matches C — which is why the tables no longer need `--backend=c`. The candidate
-"arrays of records are slow" finding from 0.98 resolved into exactly this: not a
-throughput bug but a retained-`Array` leak plus ordinary per-access reference
-counting. Chasing a weak claim to its precise scope is the methodology working
-too.
+Then benchmarking case 6 surfaced more bugs, and following them across releases
+is the clearest example of the methodology. On 0.98 the native backend leaked
+record values ([#1048](https://github.com/lnds/kaikai/issues/1048)): 10M
+short-lived records took 768 MB on native versus 1 MB on `--backend=c`. Chasing
+it across versions: on 0.99 the leak narrowed to boxed values *retained in an
+`Array`* ([#1112](https://github.com/lnds/kaikai/issues/1112)); 0.99.1 fixed the
+fill path but transiently regressed the *read* path
+([#1126](https://github.com/lnds/kaikai/issues/1126)). **On 0.99.3 the whole
+family is fixed** — measured, not asserted: the `Array[Point]` fill+fold at
+N=100k now frees correctly (`leaked=4`, was `leaked≈N`). The candidate "arrays
+of records are slow" finding resolved into exactly this — a retained-`Array`
+leak plus ordinary per-access reference counting, both since addressed.
 
-> On the compiler moving under you: the GitHub API reports #1048 `CLOSED`, but
-> its comments show it was **reopened** — a fix landed, was reverted to unblock
-> the self-host gate, and is deferred. Trust the measured behavior and the issue
-> discussion, not the bare `state` field.
+More: the same benchmarking motivated a value-record proposal
+([#1121](https://github.com/lnds/kaikai/issues/1121)) that shipped as
+[`Vec[T]`](https://github.com/lnds/kaikai/issues/1135) — a flat unboxed value
+vector that flips case 6 from a Rust *layout* win to a Rust *wall-only* win. So
+case 6's verdict itself moved under the compiler, which is the whole point of
+running every claim.
+
+> On the compiler moving under you: the GitHub API once reported #1048 `CLOSED`
+> while its comments showed it reopened (fix landed, reverted, deferred). The
+> lesson held — trust the measured behavior and the issue discussion, not the
+> bare `state` field. Re-checked on 0.99.3, every bug this repo filed is now
+> genuinely closed, confirmed by re-running.
