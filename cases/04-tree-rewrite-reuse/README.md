@@ -125,7 +125,7 @@ kai build --release kaikai/bench_tree.kai     -o /tmp/bt && /tmp/bt 22   # sum=8
 Rewriting every leaf of a `build(d)` tree and summing the result, unique-owner
 path (`rustc -O` with `black_box`, kaikai `--release`); min of several warm
 runs, `KAI_TRACE_RC` for allocation behavior. N is read from `argv` so `rustc`
-cannot constant-fold. Verified on **kaikai 0.99.1 / rustc 1.92.0**:
+cannot constant-fold. Verified on **kaikai 0.99.3 / rustc 1.92.0**:
 
 | | depth-20 (~2.1M nodes) | depth-22 (~8.4M nodes) | reuse / allocation |
 |---|---:|---:|---|
@@ -143,9 +143,9 @@ claim is parity, not a lead.)
 
 Every one of kaikai's nodes is reused in place (`reuse_in_place=2097151` at
 depth 20, `=8388607` at depth 22; `leaked=4`) — essentially **no new
-allocation**, the Perceus win the source never had to ask for. (Unlike case 6,
-the tree is an ADT `Leaf|Node`, not a value in an `Array`, so it is unaffected
-by the residual native leak #1048 — `leaked` stays at 4.)
+allocation**, the Perceus win the source never had to ask for. `leaked` stays at
+4 (just the format strings): the tree is an ADT `Leaf|Node` reused in place, not
+retained data, so nothing accumulates.
 
 **Native codegen caught up on 0.99.** On 0.98 the C backend was ~2.5× faster
 than native on this workload; on 0.99 they are within ~1.2× (native 0.13 s vs C

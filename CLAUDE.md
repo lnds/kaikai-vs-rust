@@ -12,7 +12,7 @@ remote, no push — the owner reviews and publishes).
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.1**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.3**.
 
 ### Case status (who wins)
 
@@ -22,7 +22,7 @@ remote, no push — the owner reviews and publishes).
 | 3 | shared-mutable-state | even → Rust (parallelism) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"); Rust wins only on real multi-core |
 | 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.99 native codegen closed the gap: native≈C wall-clock (was ~2.5× slower) |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
-| 6 | flat-layout-no-rc | **Rust** — `Vec<Point>` zero RC vs ~10k RC ops. On 0.99 native RSS ≈ C (record leak no longer inflates it here — see #1048 note) |
+| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — on 0.99.3 kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.06 s / 155 MB vs Rust 0.01 s / 154 MB at N=10M. Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is now the *old* opt-out, not the point |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
 | — | shared-mutable-cache | discarded — `Rc<RefCell<HashMap>>` is safe, claim false |
 
@@ -41,54 +41,56 @@ as the record of why the repo runs every claim.
 - **#997** (fixed) — SIGSEGV when a spawned fiber captured a `var`. On 0.98 it's
   a compile-time error ("mutable cell escapes its block"); case 3's kaikai side
   is that static rejection, mirroring Rust's E0499.
-- **#1048** — native record leak. **The GitHub API reports it CLOSED, but it is
-  actually reopened**: the fix (#1049) was reverted (#1056) because it uncovered
-  a pre-existing UAF (#747) that SIGSEGVs the self-compile; re-fix is deferred to
-  the #1054/#747 lane. Do not trust `--json state` alone — read the comments.
-  **In practice on 0.99 the scope shrank** (verified by measurement, not the
-  issue text):
-  - Short-lived records (the issue's own MCVE) and records in a `[T]` linked
-    list now **free correctly** on native (`leaked=3–4`, RSS flat — 10M
-    short-lived records = 1 MB, down from 768 MB on 0.98).
-  - **What still leaks on native: boxed values stored in an `Array[T]`** —
-    `Array[Record]` AND `Array[Wrap(Int)]` (an ADT variant) both show
-    `leaked≈N`, `free_total≈1`; `Array[Int]` (unboxed) is fine. So it is not
-    record-specific anymore; it is "`array_make` of a boxed element type never
-    decrefs its slots on native." Different scope from the original #1048 (which
-    was record-specific and spared variants) — filed separately as
-    **[#1112](https://github.com/lnds/kaikai/issues/1112)** (open). A churn
-    workload (build+discard 10k arrays of 10k records) leaks 100M records =
-    7 GB native vs 2 MB C, so it is unbounded, not cleanup-at-exit.
-  - This leak is **benign for RSS when the array is long-lived** (case 6's
-    workload): the records live to program end anyway, so native RSS ≈ C RSS.
+- **#1048 / #1112 / #1126** — the native boxed-value leak family. History: on
+  0.98 native records were never freed when they left scope (#1048); the fix
+  (#1049) was reverted (#1056) over a pre-existing UAF, so on 0.99.0 the
+  residue was "`Array[boxed]` slots never decref'd" (#1112) and the read path
+  regressed (#1126). **On 0.99.3 the whole family is closed and verified by
+  measurement:** the `Array[Point]` fill+read workload at N=100k now traces
+  `free_total≈N`, `leaked=4` (just format strings) on native — down from
+  `leaked≈N`. What *remains* on `Array[boxed]` is not a leak but per-access RC
+  (see #1120 below): reading `a[i].field` in a fold still pays a balanced
+  incref/decref per touch (~1.3M ops at 100k), which is a cost, not a
+  correctness bug. The zero-RC path is now `Vec[T]`, not `Array`.
 
-### Status on 0.99.1 (re-verified by measurement)
+### Status on 0.99.3 (re-verified by measurement, 2026-07-10)
 
-Four of the issues this repo filed were fixed in 0.99.1, all `COMPLETED` with
-PRs (not auto-close-by-revert like #1048 was — verify anyway):
+Everything this repo filed as a bug is now **CLOSED and confirmed fixed by
+running it**, plus the value-record proposal shipped as `Vec[T]`:
 
-- **#1112** (`Array[boxed]` fill leak) — **fixed**. `Array[Record]` fill is now
-  `leaked=1`, `free_total≈N`.
-- **#1113** (`:=` on a `Ref` field) — **fixed** (PR #1116). The full `Ref` sugar
-  shipped: `&x` makes a Ref, `@r` derefs, `r := v` / `record.field := v` sets.
-  Case 1 now uses `next: &None` / `@n.next` / `a.next := Some(b)`.
+- **#1112** (`Array[boxed]` fill leak) — **fixed** (0.99.1). `Array[Record]`
+  fill is `leaked≈1`, `free_total≈N`.
+- **#1113** (`:=` on a `Ref` field) — **fixed** (PR #1116). Full `Ref` sugar:
+  `&x` makes a Ref, `@r` derefs, `r := v` / `record.field := v` sets. Case 1
+  uses `next: &None` / `@n.next` / `a.next := Some(b)` and still runs
+  (`trace=1 2 1 2 1 2`).
 - **#1117** (map pipe over records leaks input) — **fixed** (PR #1122). Case 6
-  `layout.kai` trace went `leaked=1003` → `leaked=3`.
-- **#1120** (borrow annotations on `array_get`) — **partially shipped** (PR
-  #1125). The *array* incref/decref around each access is now elided (`decref`
-  constant instead of per-access). But `array_get` still increfs the *element*,
-  and step 3 (cancel the element dup/drop when consumed) did NOT land — so wall
-  time did not move (still ~0.17s vs Koka 0.02s on `Array[Int]` at 10M), and it
-  introduced a regression (next item).
-- **#1126** (NEW regression, open) — reading `a[i].field` from an `Array[Record]`
-  in a loop now **leaks the record** on both backends, `leaked≈N`. Caused by
-  #1120: the array-count elision left the element incref unbalanced on the read
-  path for boxed elements. `Array[Int]` fine. Distinct from #1112 (fill path,
-  fixed) and #1117 (map pipe, fixed). This is the current live leak on the case-6
-  Array workload.
+  `layout.kai` trace `leaked=1003` → `leaked=3`.
+- **#1120** (borrow annotations on `array_get`) — **closed**. The *array*
+  incref/decref per access is elided. The *element* incref on the boxed-record
+  read path is still there: `Array[Point]` at N=100k shows
+  `incref_total≈600k + decref_total≈700k` ≈ 1.3M RC ops for a pure fold — that
+  residual per-touch counting is why boxed `Array` stays ~10× off Rust. `Vec`
+  (below) sidesteps it entirely, so this stopped mattering for case 6.
+- **#1126** (the 0.99.1 read-path leak) — **fixed** (PR #1128), verified: the
+  same `Array[Point]` fill+`a[i].x`-fold loop that leaked `≈N` on 0.99.1 now
+  frees correctly — N=100k → `leaked=4` (just the format strings),
+  `free_total≈N`. Also re-attributed upstream: it was **not** a #1120
+  regression (0.98.0 leaked byte-identically) but the tail-recursive read loop
+  never dropping the re-threaded array at the base case.
+- **#1121** (unboxed value records + monomorphized `Array`) — **superseded by
+  #1135 and delivered as `Vec[T]`** (PRs #1142/#1147/#1152/#1154). `Vec[T]` is
+  a pure *value* vector: flat unboxed monomorphized storage (`Vec[Point]` =
+  16.2 B/elem, records inline, one RC header for the whole buffer), in-place
+  mutation when rc==1 / copy-on-write when shared, purely functional API (no
+  `Mutable` in the row). Case 6's `bench_vec.kai` at N=100k traces
+  `alloc_total=9`, `vec_inplace=100000 vec_cow=0`, `incref_total=0` — the
+  Rust `Vec` cost model proven by the refcount. Coexists with `Array[T]` (the
+  mutable *reference*, `Mutable` in the row); intents don't overlap.
 
-Still open (design proposals, not bugs): **#1121** (value records +
-monomorphization), **#1123** (`kind Region` — escaping arenas as a kind).
+Still open (design proposal, not a bug): **#1123** (`kind Region` — escaping
+arenas as a kind), narrowed by #1135 to trees / lifetime-batching / the
+escaping-generational case (`Vec` took the confined bulk case).
 
 If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
 snapshot of the compiler and can move. Check state with
@@ -103,10 +105,10 @@ snapshot of the compiler and can move. Check state with
 - Force Rust to not constant-fold the whole program: read N from `argv` and wrap
   the result in `std::hint::black_box`, else `rustc -O` computes it at compile
   time and reports ~0 for everything.
-- On 0.99 native RSS is honest for the case-6 shape (long-lived array), so
-  perf numbers use the **default native backend**; keep a C column only to show
-  the codegen delta, not for memory correctness. (The `Array[T]` leak is benign
-  here — see the #1048 note above.)
+- On 0.99.3 native RSS is honest for the case-6 shape, so perf numbers use the
+  **default native backend**; the C column only shows the codegen delta. The
+  case-6 headline is now `Vec[Point]` (native = C: 0.06 s / 155 MB at N=10M),
+  not the boxed `Array[Point]` row (853 MB) which is kept as the *old* opt-out.
 - **Stack, not the compiler:** the `[Point]` linked-list version of case 6 uses
   non-tail recursion (`build`/`sum_x` with no accumulator) and **SIGSEGVs above
   ~100k** even with `ulimit -s` maxed (64 MB on macOS). So the list variant is

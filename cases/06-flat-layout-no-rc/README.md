@@ -125,7 +125,7 @@ rustc --edition 2024 -O rust/bench_layout.rs -o /tmp/bl && /tmp/bl 1000000
 kai build --release kaikai/bench_list.kai  -o /tmp/kl && /tmp/kl 100000
 # kaikai: Array[Point], tail-recursive — reaches 1M/10M
 kai build --release kaikai/bench_array.kai -o /tmp/ka && /tmp/ka 1000000
-# kaikai: Vec[Point] — the value vector (needs kaikai main, post-0.99.1)
+# kaikai: Vec[Point] — the value vector (0.99.3)
 kai build --release kaikai/bench_vec.kai -o /tmp/kv && /tmp/kv 1000000
 ```
 
@@ -135,7 +135,7 @@ The op-count above predicts a cost; here is the measured one. Same machine
 (macOS arm64), Rust `-O` with `black_box`, kaikai `--release` (`-O2`);
 wall-clock is the min of 6 warm runs, RSS is peak resident set from
 `/usr/bin/time -l`. N is read from `argv` so `rustc` cannot constant-fold the
-answer. Verified on **kaikai 0.99.1** / **rustc 1.92.0**.
+answer. Verified on **kaikai 0.99.3** / **rustc 1.92.0**.
 
 Two things shape these numbers:
 
@@ -143,15 +143,14 @@ Two things shape these numbers:
    not the version tag.** The `Array[Point]` benchmark *fills* the array
    (`a[i] := ...`) and *reads it back* (`a[i].x`). On 0.98 the fill leaked
    ([#1048](https://github.com/lnds/kaikai/issues/1048)/[#1112](https://github.com/lnds/kaikai/issues/1112));
-   0.99.1 fixed the fill path, but the same release regressed the **read** path —
-   `a[i].field` in a loop now leaks the record on both backends
-   ([#1126](https://github.com/lnds/kaikai/issues/1126)). For *this* workload the
-   leak is **benign for the ratio**: the array lives to program end, so the
-   records were going to occupy memory anyway — `leaked≈N` inflates the RC counts
-   but native peak RSS still lands within a few percent of C. The numbers below
-   use the **default native backend**; the C column shows the codegen delta. (#1126 has since been
-   fixed — [lnds/kaikai#1128](https://github.com/lnds/kaikai/pull/1128) — the
-   discard shape reclaims again.)
+   0.99.1 fixed the fill path but transiently regressed the **read** path
+   ([#1126](https://github.com/lnds/kaikai/issues/1126)); **both are fixed on
+   0.99.3** ([#1128](https://github.com/lnds/kaikai/pull/1128)). At N=100k the
+   `Array[Point]` fill+`a[i].x`-fold now traces `free_total≈N`, `leaked=4` (just
+   the format strings). What remains on the boxed `Array` is per-access RC, not
+   a leak: the fold pays a balanced incref/decref per touch
+   (`incref_total≈600k + decref_total≈700k` at 100k). The numbers below use the
+   **default native backend**; the C column shows the codegen delta.
 2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
    are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
    (64 MB on macOS). That is a property of the naive recursive shape, not the
@@ -184,9 +183,8 @@ single contiguous allocation and zero counting. (Note the native backend is now
 *faster* than C on the `Array` workload — 0.39 s vs 0.58 s at 10M — the 0.98
 codegen gap has largely closed.)
 
-**The `Vec[Point]` row (measured 2026-07-09 on kaikai `main`, post-0.99.1:
-`Vec[T]` shipped across lnds/kaikai#1142/#1147/#1152/#1154) changes the case's
-verdict.** The idiomatic surface (`import collections.vec`, `vec.push` /
+**The `Vec[Point]` row (re-measured on kaikai 0.99.3: `Vec[T]` shipped across
+lnds/kaikai#1142/#1147/#1152/#1154) changes the case's verdict.** The idiomatic surface (`import collections.vec`, `vec.push` /
 `vec.get` in plain tail-recursive user code — no internal primitives) lands at
 **0.06 s / 155 MB** at N=10M against Rust's 0.01 s / 154 MB: memory parity to
 within one percent, wall within ~6× of a `black_box`'d `rustc -O` loop — and
