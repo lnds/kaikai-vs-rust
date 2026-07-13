@@ -140,21 +140,22 @@ The op-count above predicts a cost; here is the measured one. Same machine
 wall-clock is the min of 6 warm runs, RSS is peak resident set from
 `/usr/bin/time -l`. N is read from `argv` so `rustc` cannot constant-fold the
 answer. Wall-clock/RSS table measured on **kaikai 0.99.3** / **rustc 1.92.0**;
-the RC behavior (`vec_inplace=N`, `incref_total=0` on `Vec`; `layout.kai`
-`leaked=4`) re-confirmed by re-running on **0.99.6** and again on **0.99.11**.
-The `kind Region` arena sub-case (shipped 0.99.5) is measured fresh below.
+the RC behavior (`vec_inplace=N`, `incref_total=0` on `Vec`) re-confirmed by
+re-running on **0.99.6**, **0.99.11** and **0.99.12** (the `Vec[Point]` row's
+10M cell re-measured on 0.99.12: 0.07 s / 155.4 MiB, within noise of the
+table). The `kind Region` arena sub-case (shipped 0.99.5) is measured fresh
+below.
 
-**A 0.99.11 caveat on every kaikai RSS number in this table:** the M:N
-scheduler runtime (shipped 0.99.11) materialises ~150 MiB of thread-local RC
-pool tables per scheduler thread, even at the default `KAI_THREADS=1` — a
-hello-world is now ~162 MiB resident where it was ~2 MiB on 0.99.6 (filed as
-[#1212](https://github.com/lnds/kaikai/issues/1212)). The RC
-traces are unchanged (still `vec_inplace=N`, `incref=0`, data cost exactly 1×),
-but on 0.99.11 the measured RSS is the table's number **plus that fixed base**:
-`bench_vec` at N=10M reads 315 MiB (152.6 MiB of data + the ~162 MiB base)
-instead of 155 MB. It is a constant offset from the runtime, not a change in
-`Vec`'s memory model; the table keeps the 0.99.3 numbers because they show the
-data-structure cost, which is what this case compares.
+**A note on the 0.99.11 RSS blip:** on 0.99.11 (only) the new M:N scheduler
+runtime materialised ~150 MiB of thread-local RC pool tables even at the
+default `KAI_THREADS=1`, so every measured RSS carried that fixed base —
+`bench_vec` at N=10M read 315 MiB (152.6 MiB of data + the base). Filed as
+[#1212](https://github.com/lnds/kaikai/issues/1212), **fixed on 0.99.12**
+([PR #1216](https://github.com/lnds/kaikai/pull/1216)): hello-world is back to
+~1.7 MiB, and `bench_vec` at N=10M re-measures at **0.07 s / 155.4 MiB** —
+the table's numbers are the measured numbers again, no base to subtract. The
+RC traces were unchanged throughout (`vec_inplace=N`, `incref=0`, data cost
+exactly 1×).
 
 Two things shape these numbers:
 
@@ -256,17 +257,18 @@ let total = region { r ->
 }                                # <- the WHOLE tree frees here: one shot
 ```
 
-Measured on the installed 0.99.11 (native and C trace identically since
+Measured on the installed 0.99.12 (native and C trace identically since
 0.99.7), at N=100 (the same size as kaikai's own shipped fixture,
 `total=5050`) — `KAI_TRACE_RC=1`:
 
 ```
-arena_alloc=5050  arena_free=5050  arena_live=0  incref_total=0  variant allocs=8
+arena_alloc=5050  arena_free=5050  arena_live=0  incref_total=0  alloc_total=9
 ```
 
 `incref_total=0`: not one per-node reference count for the entire build+fold,
-and `arena_free` matches `arena_alloc` (nothing leaks). The heap RC sees only 8
-transient variants; every tree node lives and dies in the arena. The count is
+and `arena_free` matches `arena_alloc` (nothing leaks). The heap RC sees only 9
+transient allocations (format strings and the like); every tree node lives and
+dies in the arena. The count is
 `N(N+1)/2` (5050 for N=100) because inserting `n..1` in order builds a
 degenerate spine — the same non-tail shape as `bench_list`. That is the arena
 cost model, proven by the refcount, on a linked structure `Vec` cannot express.

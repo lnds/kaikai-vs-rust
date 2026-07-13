@@ -12,17 +12,17 @@ remote, no push — the owner reviews and publishes).
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.11**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.12**.
 
 ### Case status (who wins)
 
 | # | Case | Verdict |
 |---|------|---------|
 | 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect. (A 0.99.5 typer regression #1194 briefly blocked `cycle.kai`; fixed on 0.99.6, runs again — `trace=1 2 1 2 1 2`, both backends) |
-| 3 | shared-mutable-state | even (wall) → Rust (memory, default) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.99.11 the M:N scheduler (#1207 F1, PR #1211) closed the wall gap: `parallel_counter` at `KAI_THREADS=8` = 0.16 s vs Rust 8-thread 0.14 s (6.7× self-speedup, same total, both backends). Rust keeps: default-on (kaikai default N=1), shared memory (kaikai deep-copies cross-thread sends), and RSS — kai 722 MiB vs Rust 1.7 MiB on the same bench (the ~150 MiB/thread TLS-pool base, see below) |
+| 3 | shared-mutable-state | even (wall + memory) → Rust (default-on, sharing) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.99.11 the M:N scheduler (#1207 F1, PR #1211) closed the wall gap; on 0.99.12 (#1212 fixed, PR #1216) the RSS gap closed too: `parallel_counter` at `KAI_THREADS=8` = 0.14 s / 2.4 MiB vs Rust 8-thread 0.14 s / 1.7 MiB (~8× self-speedup, same total, both backends). Rust keeps: default-on (kaikai default N=1) and shared memory (kaikai deep-copies cross-thread sends) |
 | 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.99 native codegen closed the gap: native≈C wall-clock (was ~2.5× slower) |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
-| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.06 s / 155 MB vs Rust 0.01 s / 154 MB at N=10M (data cost; on 0.99.11 add the ~162 MiB M:N runtime base → 315 MiB measured). Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. On 0.99.5 `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — since 0.99.7 (#1197 fixed) **both backends trace identically** (pure-bump model: `arena_alloc=5050 incref=0` at N=100; churn at N=10k = `arena_alloc=50M` / ~1.7 GB on both — zero counting, no recycling) |
+| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.07 s / 155.4 MiB vs Rust 0.01 s / 154 MB at N=10M (measured directly again on 0.99.12; the 0.99.11-only ~162 MiB runtime base that inflated it to 315 MiB is gone, #1212 fixed). Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. On 0.99.5 `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — since 0.99.7 (#1197 fixed) **both backends trace identically** (pure-bump model: `arena_alloc=5050 incref=0` at N=100; churn at N=10k = `arena_alloc=50M` / ~1.7 GB on both — zero counting, no recycling) |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
 | — | shared-mutable-cache | discarded — `Rc<RefCell<HashMap>>` is safe, claim false |
 
@@ -53,21 +53,35 @@ as the record of why the repo runs every claim.
   incref/decref per touch (~1.3M ops at 100k), which is a cost, not a
   correctness bug. The zero-RC path is now `Vec[T]`, not `Array`.
 
-### Status on 0.99.11 (re-verified by measurement, 2026-07-13)
+### Status on 0.99.12 (re-verified by measurement, 2026-07-13)
+
+The 0.99.12 re-run: **all cases green, zero open bugs of ours.** #1212 (the
+TLS-pool RSS finding from 0.99.11, below) is **fixed** via PR #1216
+(lazy-materialise the RC free-list pools), verified by measurement:
+hello-world RSS 161.6 MiB → **1.7 MiB** (`KAI_THREADS=1`) and 722 MiB →
+**1.9 MiB** (`KAI_THREADS=8`); `parallel_counter` at `KAI_THREADS=8` = 0.14 s
+/ 2.4 MiB (wall unchanged-or-better vs 0.99.11, RSS now at parity with Rust's
+1.7 MiB); `bench_vec` N=10M back to 0.07 s / 155.4 MiB measured directly (was
+315 MiB with the base). `KAI_THREADS` default is still 1 (#1207 F3 pending).
+All RC traces byte-compatible with 0.99.11 except one **minor constant
+delta**: the C backend now leaks ~6 extra bootstrap allocations (hello-world C
+`leaked=7` vs native `leaked=1`; `layout.kai` C `leaked=10` vs native 4) —
+constant across N (bench_vec C `leaked=10` at both 100k and 200k), not a real
+leak. Region traces identical on both backends (`arena_alloc=5050 incref=0`).
+
+### Status on 0.99.11 (historical)
 
 The 0.99.11 re-run: **all cases green, zero open bugs of ours** (#1197 fixed
 on 0.99.7, confirmed), **M:N parallelism shipped** (#1207 F1 via PR #1211,
 `KAI_THREADS=N`, default 1 — case 3 measured at wall parity with Rust
-threads), and **one new finding, filed as #1212**: the M:N TLS partitioning
-(PR #1210) made the RC pools (`kai_cell_pool` 1M×8 B + `kai_slot_pool` and
-`kai_var_block_pool` 9×1M×8 B each, `stage2/runtime.h`) thread-local, so every
-scheduler thread materialises ~152 MiB of pool tables — hello-world RSS went
-~2 MiB (0.99.6) → 161.6 MiB (0.99.11, `KAI_THREADS=1`) → 722 MiB at
-`KAI_THREADS=8`. As `static` these were lazily-paged .bss; as TLS the image is
-committed per thread. RC traces and data-cost scaling are unchanged (exactly
-1× per byte of data on `Vec`). Affects every RSS number quoted in the repo as
-a constant offset. Minor trace delta, same cause family: `layout.kai` now
-traces `leaked=4` (was 3) — constant, format strings, does not scale.
+threads), and **one new finding, filed as #1212** (fixed on 0.99.12, above):
+the M:N TLS partitioning (PR #1210) made the RC pools (`kai_cell_pool` 1M×8 B
++ `kai_slot_pool` and `kai_var_block_pool` 9×1M×8 B each, `stage2/runtime.h`)
+thread-local, so every scheduler thread materialised ~152 MiB of pool tables —
+hello-world RSS went ~2 MiB (0.99.6) → 161.6 MiB (0.99.11, `KAI_THREADS=1`) →
+722 MiB at `KAI_THREADS=8`. As `static` these were lazily-paged .bss; as TLS
+the image was committed per thread. RC traces and data-cost scaling were
+unchanged (exactly 1× per byte of data on `Vec`).
 
 ### Status as of 0.99.6 (historical)
 
@@ -154,11 +168,10 @@ region proposal shipped as `kind Region`:
 If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
 snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
-(#1048 was CLOSED-but-reopened). Two things to watch on the next upgrade:
-whether the per-thread pool RSS base (~152 MiB/thread, above) shrinks — the
-tell is hello-world RSS at `KAI_THREADS=1` — and whether the `KAI_THREADS`
-default flips to N=cores (#1207 F3), which would make case 3's "opt-in" caveat
-obsolete.
+(#1048 was CLOSED-but-reopened). To watch on the next upgrade: whether the
+`KAI_THREADS` default flips to N=cores (#1207 F3), which would make case 3's
+"opt-in" caveat obsolete, and whether the C backend's constant bootstrap
+`leaked` offset (~6 allocs, 0.99.12) changes or starts scaling.
 
 ## Benchmarking notes
 
@@ -175,10 +188,10 @@ obsolete.
 - Regions: since 0.99.7 (#1197 fixed) native and C trace identically
   (pure-bump, `incref=0`) — either backend works; the old "quote the C column"
   exception is retired.
-- **RSS on 0.99.11+ includes a ~152 MiB/thread runtime base** (M:N TLS pools),
-  even at default `KAI_THREADS=1`. When quoting memory, either state the base
-  separately (as case 6 does) or compare deltas; a raw `time -l` RSS is
-  data + base. Parallel benches at `KAI_THREADS=N` carry N× that base.
+- **RSS is honest again on 0.99.12+**: the 0.99.11-only ~152 MiB/thread M:N
+  pool base is gone (#1212 fixed, PR #1216); hello-world is ~1.7 MiB at any
+  `KAI_THREADS`. A raw `time -l` RSS is the data cost. Numbers quoted from
+  0.99.11 carry that base — don't compare them raw against 0.99.12+ runs.
 - **Stack, not the compiler:** the `[Point]` linked-list version of case 6 uses
   non-tail recursion (`build`/`sum_x` with no accumulator) and **SIGSEGVs above
   ~100k** even with `ulimit -s` maxed (64 MB on macOS). So the list variant is

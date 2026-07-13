@@ -17,10 +17,13 @@ Expected total: `1+2+3+4+5 = 15`.
 > model — Rust to `Arc<Mutex>`, kaikai to an **actor** (message-passing, no
 > shared memory). The one asymmetry that remained through 0.99.6: Rust's
 > `Arc<Mutex>` runs on real OS threads across cores; kaikai's actor serialised
-> on one scheduler thread. **On 0.99.11 that asymmetry closes on wall-clock**:
+> on one scheduler thread. **On 0.99.11 that asymmetry closed on wall-clock**:
 > the M:N work-stealing scheduler runs actors across real cores
-> (`KAI_THREADS=N`), at wall parity with Rust threads on a CPU-bound bench —
-> but at a large fixed memory cost per scheduler thread (measured below).
+> (`KAI_THREADS=N`), at wall parity with Rust threads on a CPU-bound bench.
+> 0.99.11 paid ~150 MiB of runtime tables per scheduler thread for it; **0.99.12
+> fixed that** ([#1212](https://github.com/lnds/kaikai/issues/1212) /
+> [PR #1216](https://github.com/lnds/kaikai/pull/1216)) — the same bench is now
+> at RSS parity too (measured below).
 
 ## Rust — the idiomatic safe attempt fails
 
@@ -164,7 +167,7 @@ and segfaulted** ([lnds/kaikai#997](https://github.com/lnds/kaikai/issues/997));
 0.98 turned the runtime crash into this compile-time rejection — the safety
 story is now static on both sides.
 
-## kaikai 0.99.11 — real multi-core via `KAI_THREADS` (measured)
+## kaikai 0.99.11+ — real multi-core via `KAI_THREADS` (measured)
 
 kaikai **0.99.11** shipped F1 of the M:N work-stealing scheduler
 ([#1207](https://github.com/lnds/kaikai/issues/1207) /
@@ -182,31 +185,30 @@ send their partial to the counter.
 total is identical at every `KAI_THREADS`, which is the determinism the copy
 buys.
 
-Measured on an Apple M4 Pro (14 cores), min of 6 warm runs, `--release` / `-O`:
+Measured on an Apple M4 Pro (14 cores), min of 6 warm runs, `--release` / `-O`,
+on **kaikai 0.99.12**:
 
 | Config | wall | speedup | peak RSS |
 |---|---|---|---|
-| kaikai, `KAI_THREADS=1` (default) | 1.07 s | 1× | ~162 MiB |
-| kaikai, `KAI_THREADS=4` | 0.29 s | 3.7× | ~402 MiB |
-| kaikai, `KAI_THREADS=8` | 0.16 s | 6.7× | 722.6 MiB |
+| kaikai, `KAI_THREADS=1` (default) | 1.11 s | 1× | 2.2 MiB |
+| kaikai, `KAI_THREADS=4` | 0.27 s | 4.1× | 2.4 MiB |
+| kaikai, `KAI_THREADS=8` | 0.14 s | 7.9× | 2.4 MiB |
 | Rust, 8 × `thread::spawn` | 0.14 s | — | 1.7 MiB |
 
-The C backend matches native (0.16 s at `KAI_THREADS=8`).
+The C backend matches native (0.14 s at `KAI_THREADS=8`).
 
-Two honest caveats:
+On memory: 0.99.11 materialised ~150 MiB of thread-local RC pool tables **per
+scheduler thread** — this same bench read 722 MiB at `KAI_THREADS=8`, ~425×
+Rust's RSS, and a hello-world was 161.6 MiB resident. Filed as
+[#1212](https://github.com/lnds/kaikai/issues/1212); **fixed on 0.99.12**
+([PR #1216](https://github.com/lnds/kaikai/pull/1216) lazy-materialises the
+pools) and re-measured: hello-world is back to ~1.7 MiB, and this bench is
+2.4 MiB at 8 threads — RSS parity with Rust, at every thread count.
+
+One honest caveat remains:
 
 - **Parallelism is opt-in.** The default is `KAI_THREADS=1` (byte-identical
   with the old scheduler); the flip to N=cores is a planned upstream phase.
-- **The memory price is large and fixed.** On 0.99.11 the runtime materialises
-  ~150 MiB of thread-local RC pool tables **per scheduler thread** — an empty
-  `Stdout.print` program is 161.6 MiB resident at `KAI_THREADS=1` and 722 MiB
-  at 8, where the same base was ~2 MiB on 0.99.6. The TLS partitioning that
-  makes M:N sound turned lazily-paged static pools into eagerly-committed
-  per-thread images (filed as
-  [#1212](https://github.com/lnds/kaikai/issues/1212)). So on this bench
-  kaikai reaches wall parity with Rust
-  (0.16 s vs 0.14 s) while paying ~425× its RSS. Wall parity is real; the
-  memory story is not settled yet.
 
 There is also a structural asymmetry the numbers don't show: cross-thread
 sends **copy**. Partial sums are cheap to copy; a large shared structure is
@@ -227,7 +229,7 @@ kai build shared_state_fibers_REJECTED.kai                      # compile error 
 # parallelism (kaikai 0.99.11+)
 kai build --release kaikai/parallel_counter.kai -o /tmp/pc
 time /tmp/pc                                                    # KAI_THREADS=1
-KAI_THREADS=8 sh -c 'time /tmp/pc'                              # ~6.7× faster, same total
+KAI_THREADS=8 sh -c 'time /tmp/pc'                              # ~8× faster, same total
 rustc --edition 2024 -O rust/parallel_counter.rs -o /tmp/pr
 time /tmp/pr 300000000
 ```
@@ -235,12 +237,12 @@ time /tmp/pr 300000000
 ## Where Rust wins / the trade-off
 
 Safety is symmetric — both languages reject shared mutable state across
-concurrency at compile time. As of 0.99.11, wall-clock parallelism is close to
-symmetric too (measured above). What remains:
+concurrency at compile time. As of 0.99.12, wall-clock **and** resident memory
+are symmetric too (measured above). What remains:
 
-- **Rust's parallelism is on by default and costs nothing at rest.** 8 threads,
-  1.7 MiB resident. kaikai's is opt-in (`KAI_THREADS`) and currently pays
-  ~150 MiB of runtime tables per scheduler thread — 722 MiB for the same bench.
+- **Rust's parallelism is on by default.** kaikai's is opt-in
+  (`KAI_THREADS=N`, default 1); until the default flips, the out-of-the-box
+  program runs on one core.
 - **Rust can share; kaikai copies.** `Arc<Mutex>` gives N cores one allocation;
   kaikai's cross-thread sends deep-copy the message. For partial results that
   is free; for a large shared structure, Rust expresses a shape kaikai
