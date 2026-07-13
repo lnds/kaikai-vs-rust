@@ -1,8 +1,9 @@
 # CLAUDE.md — kaikai-vs-rust
 
 Adversarial, honest comparison repo between **kaikai** and **Rust**. Every
-claim is proven by compiling/running code, never asserted. Local-only git (no
-remote, no push — the owner reviews and publishes).
+claim is proven by compiling/running code, never asserted. Remote:
+`github.com/lnds/kaikai-vs-rust` (**private**); push on request — making it
+public is the owner's call.
 
 ## What this repo is
 
@@ -253,9 +254,10 @@ a pipe — `139` = SIGSEGV. RC behavior: `KAI_TRACE_RC=1 ./bin` prints
 ## Conventions
 
 - Commits: Conventional, English, no Claude attribution.
-- **Local only** — never `git push` or `gh repo create` for this repo. The
-  owner publishes. (The three bug issues in `lnds/kaikai` were filed on
-  explicit request — that is a different repo.)
+- Remote is `origin` = `github.com/lnds/kaikai-vs-rust`, **private**. Pushing
+  `main` is fine when asked; never flip visibility to public — the owner
+  publishes. (Bug issues in `lnds/kaikai` are filed on explicit request —
+  that is a different repo.)
 - READMEs are in English (the comparison is for a skeptical Rust audience).
 - Honesty rule: if a safe Rust version compiles, the claim is false → move it
   to `discarded/`. Every case keeps a "Where Rust wins / trade-off" section.
