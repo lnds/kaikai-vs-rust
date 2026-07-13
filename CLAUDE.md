@@ -64,10 +64,11 @@ hello-world RSS 161.6 MiB → **1.7 MiB** (`KAI_THREADS=1`) and 722 MiB →
 1.7 MiB); `bench_vec` N=10M back to 0.07 s / 155.4 MiB measured directly (was
 315 MiB with the base). `KAI_THREADS` default is still 1 (#1207 F3 pending).
 All RC traces byte-compatible with 0.99.11 except one **minor constant
-delta**: the C backend now leaks ~6 extra bootstrap allocations (hello-world C
-`leaked=7` vs native `leaked=1`; `layout.kai` C `leaked=10` vs native 4) —
-constant across N (bench_vec C `leaked=10` at both 100k and 200k), not a real
-leak. Region traces identical on both backends (`arena_alloc=5050 incref=0`).
+delta, filed as #1219**: the C backend now leaks 6 extra bootstrap `variant`
+allocations (hello-world C `leaked=7` vs native `leaked=1`; `layout.kai` C
+`leaked=10` vs native 4) — constant across N (bench_vec C `leaked=10` at both
+100k and 200k), not a real leak, but it skews the C-backend `leaked` baseline.
+Region traces identical on both backends (`arena_alloc=5050 incref=0`).
 
 ### Status on 0.99.11 (historical)
 
@@ -170,8 +171,9 @@ snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
 (#1048 was CLOSED-but-reopened). To watch on the next upgrade: whether the
 `KAI_THREADS` default flips to N=cores (#1207 F3), which would make case 3's
-"opt-in" caveat obsolete, and whether the C backend's constant bootstrap
-`leaked` offset (~6 allocs, 0.99.12) changes or starts scaling.
+"opt-in" caveat obsolete, and whether #1219 (the C backend's constant +6
+bootstrap `leaked` offset, filed on 0.99.12) is fixed — the tell is
+hello-world C tracing `leaked=1` again.
 
 ## Benchmarking notes
 
