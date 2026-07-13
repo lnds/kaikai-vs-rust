@@ -98,6 +98,18 @@ fn main() : Int / Stdout + Mutable = {
 
 Output: `trace=1 2 1 2 1 2` — identical.
 
+> **A regression came and went on 0.99.5 → 0.99.6.** This exact file ran on
+> 0.99.3, then briefly **stopped compiling on 0.99.5**: a typer regression
+> (unrelated to the `Ref` cycle, which kept type-checking) lost the type of the
+> reassigned record `var` `cur` when its field was read inside the loop's
+> `"#{...int_to_string(cur.id)...}"` interpolation, erroring `type annotation
+> needed: the receiver of '.id' is not resolved`. It was filed as
+> [lnds/kaikai#1194](https://github.com/lnds/kaikai/issues/1194) with a 7-line
+> repro (no `Ref`, no `import loop`) and **fixed on 0.99.6** (PR #1196) — the
+> file now compiles and runs unchanged on both backends. Kept as a note because
+> catching a regression by re-running is exactly why this repo re-runs every
+> claim on every upgrade.
+
 The mutation is not invisible: rewriting a node's `next` puts `Mutable` in the
 function's effect row, and the compiler enforces that. The difference from Rust
 is that the cyclic shape is two direct writes with no `Weak`/strong distinction

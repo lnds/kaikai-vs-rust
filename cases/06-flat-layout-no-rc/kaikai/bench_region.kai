@@ -1,0 +1,41 @@
+import os.args
+import core.string
+
+# A LINKED structure (a BST) built in an arena and folded to a scalar.
+# This is the case Vec cannot cover: Vec[T] is contiguous; a tree is
+# linked. tree_insert/tree_sum are region-polymorphic — `<r>` appears
+# only in their signatures, the ctors stay pure, and every Node
+# bump-allocates in r's arena. The result is an Int, so nothing escapes:
+# the whole tree frees in one shot at the closing brace, zero per-node RC.
+type Tree = Leaf | Node(Tree, Int, Tree)
+
+fn tree_insert[r: Region](t: Tree<r>, k: Int) : Tree<r> =
+  match t {
+    Leaf -> Node(Leaf, k, Leaf)
+    Node(l, v, rr) ->
+      if k < v { Node(tree_insert(l, k), v, rr) }
+      else if k > v { Node(l, v, tree_insert(rr, k)) }
+      else { Node(l, v, rr) }
+  }
+
+fn tree_sum[r: Region](t: Tree<r>) : Int =
+  match t {
+    Leaf -> 0
+    Node(l, v, rr) -> tree_sum(l) + v + tree_sum(rr)
+  }
+
+fn build_tree[r: Region](t: Tree<r>, n: Int) : Tree<r> =
+  if n == 0 { t } else { build_tree(tree_insert(t, n), n - 1) }
+
+fn main() : Int / Stdout + Env = {
+  let n = match args.argv() {
+    [s, ..._] -> match string.to_int(s) { Some(v) -> v ; None -> 100 }
+    []        -> 100
+  }
+  let total = region { r ->
+    let t = build_tree(Leaf, n)
+    tree_sum(t)
+  }
+  Stdout.print("total=#{int_to_string(total)}")
+  0
+}
