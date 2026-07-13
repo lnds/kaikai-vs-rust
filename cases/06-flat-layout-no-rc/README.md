@@ -127,6 +127,10 @@ kai build --release kaikai/bench_list.kai  -o /tmp/kl && /tmp/kl 100000
 kai build --release kaikai/bench_array.kai -o /tmp/ka && /tmp/ka 1000000
 # kaikai: Vec[Point] — the value vector (0.99.3)
 kai build --release kaikai/bench_vec.kai -o /tmp/kv && /tmp/kv 1000000
+# kaikai: Tree<r> in an arena — kind Region (0.99.5). Since 0.99.7 (#1197
+# fixed) native and C agree on the trace; either backend works.
+kai build --release kaikai/bench_region.kai -o /tmp/kr
+KAI_TRACE_RC=1 /tmp/kr 100    # total=5050; arena_alloc=5050, incref_total=0
 ```
 
 ## Performance at scale
@@ -135,7 +139,22 @@ The op-count above predicts a cost; here is the measured one. Same machine
 (macOS arm64), Rust `-O` with `black_box`, kaikai `--release` (`-O2`);
 wall-clock is the min of 6 warm runs, RSS is peak resident set from
 `/usr/bin/time -l`. N is read from `argv` so `rustc` cannot constant-fold the
-answer. Verified on **kaikai 0.99.3** / **rustc 1.92.0**.
+answer. Wall-clock/RSS table measured on **kaikai 0.99.3** / **rustc 1.92.0**;
+the RC behavior (`vec_inplace=N`, `incref_total=0` on `Vec`; `layout.kai`
+`leaked=4`) re-confirmed by re-running on **0.99.6** and again on **0.99.11**.
+The `kind Region` arena sub-case (shipped 0.99.5) is measured fresh below.
+
+**A 0.99.11 caveat on every kaikai RSS number in this table:** the M:N
+scheduler runtime (shipped 0.99.11) materialises ~150 MiB of thread-local RC
+pool tables per scheduler thread, even at the default `KAI_THREADS=1` — a
+hello-world is now ~162 MiB resident where it was ~2 MiB on 0.99.6 (filed as
+[#1212](https://github.com/lnds/kaikai/issues/1212)). The RC
+traces are unchanged (still `vec_inplace=N`, `incref=0`, data cost exactly 1×),
+but on 0.99.11 the measured RSS is the table's number **plus that fixed base**:
+`bench_vec` at N=10M reads 315 MiB (152.6 MiB of data + the ~162 MiB base)
+instead of 155 MB. It is a constant offset from the runtime, not a change in
+`Vec`'s memory model; the table keeps the 0.99.3 numbers because they show the
+data-structure cost, which is what this case compares.
 
 Two things shape these numbers:
 
@@ -209,6 +228,71 @@ Two honest caveats:
   per touch on a record array — the cache-friendly layout is eaten by that
   per-access counting, not by a bug.
 
+## The sub-case Vec can't do: `kind Region` (linked structures in an arena)
+
+`Vec[T]` closed the memory model for *flat* bulk data, but it is contiguous —
+it cannot hold a *linked* structure. A tree of `Node(Tree, Int, Tree)` under
+plain Perceus pays one heap allocation and reference counting per node. On
+kaikai **0.99.5** the follow-up proposal
+([#1123](https://github.com/lnds/kaikai/issues/1123)) shipped as `kind Region`
+([#1192](https://github.com/lnds/kaikai/pull/1192)), and it covers exactly this
+shape: a `region { r -> ... }` block plus region-polymorphic functions over
+`Tree<r>` bump-allocate the whole tree in an arena — **zero per-node reference
+counting**, freed in one shot at the closing brace.
+
+The surface is opt-in and the region name rides a binder (`kaikai/bench_region.kai`):
+
+```kaikai
+type Tree = Leaf | Node(Tree, Int, Tree)
+
+# `<r>` appears only in the signature; the Node ctors stay pure and
+# bump-allocate in r's arena. The result is an Int, so nothing escapes.
+fn tree_insert[r: Region](t: Tree<r>, k: Int) : Tree<r> = ...
+fn tree_sum[r: Region](t: Tree<r>) : Int = ...
+
+let total = region { r ->
+  let t = build_tree(Leaf, n)   # n Node's bump-allocated, zero RC
+  tree_sum(t)                    # scalar result -> r does not escape
+}                                # <- the WHOLE tree frees here: one shot
+```
+
+Measured on the installed 0.99.11 (native and C trace identically since
+0.99.7), at N=100 (the same size as kaikai's own shipped fixture,
+`total=5050`) — `KAI_TRACE_RC=1`:
+
+```
+arena_alloc=5050  arena_free=5050  arena_live=0  incref_total=0  variant allocs=8
+```
+
+`incref_total=0`: not one per-node reference count for the entire build+fold,
+and `arena_free` matches `arena_alloc` (nothing leaks). The heap RC sees only 8
+transient variants; every tree node lives and dies in the arena. The count is
+`N(N+1)/2` (5050 for N=100) because inserting `n..1` in order builds a
+degenerate spine — the same non-tail shape as `bench_list`. That is the arena
+cost model, proven by the refcount, on a linked structure `Vec` cannot express.
+
+**Two honest limits, one since resolved, one now sharper:**
+
+- **The backend split is fixed.** On 0.99.6 native and C disagreed on the
+  region RC trace (native `arena_alloc=100 incref=98` vs C
+  `arena_alloc=5050 incref=0` on the same fixture — filed as
+  [#1197](https://github.com/lnds/kaikai/issues/1197)). **Fixed on 0.99.7**
+  and re-verified here on 0.99.11: both backends now trace identically —
+  `arena_alloc=5050 arena_free=5050 incref_total=0` on this bench, and the
+  escape fixture agrees too (`arena_alloc=55`, `incref=9` for the copy-out on
+  both). The convergence landed on the pure-bump model: zero per-node RC,
+  every ctor bump-allocates. Either backend is now the reference.
+- **A bump arena does not recycle abandoned nodes — on both backends, now.**
+  A functional `tree_insert` abandons the old spine on every insert; in a pure
+  bump arena those dead nodes accumulate until the region frees. Before the
+  convergence, native happened to reuse the spine in place (tiny memory,
+  `incref≈N`); the converged model bump-allocates on both: at N=10k both
+  backends trace `arena_alloc=50M`, `incref=0`, at **~1.7 GB** peak RSS. That
+  is the trade stated plainly: zero counting, no recycling. Regions are
+  unambiguously the right tool when the lifetime is short and *nothing escapes*
+  (build → query → drop); long-lived churn stays where Perceus shines. The
+  type (`Tree<r>` vs `Tree`) documents which model you asked for.
+
 ## Where Rust wins / the trade-off
 
 - **Zero-cost ownership.** The borrow checker proved, at compile time, that
@@ -219,7 +303,9 @@ Two honest caveats:
 - **Layout control.** `#[repr(C)]`, inline storage, contiguous cache-friendly
   buffers, and FFI-compatible structs are first-class in Rust. kaikai's
   default heap value cannot give you a guaranteed contiguous `repr` the same
-  way (you reach for `Array`/`region`, which are opt-in and more limited).
+  way; you reach for `Vec[T]` (contiguous, unboxed, the flat case) or a
+  `region { }` arena (`Tree<r>`, the linked case) — both opt-in, and the arena
+  is C-backend-only today and does not recycle (see the sub-case above).
 - **This is the dual of [case 4](../04-tree-rewrite-reuse/).** There, the
   cost of the borrow checker was expressivity (cyclic/shared/mutable shapes
   get pushed to `Rc`/`Arc`). Here, the payoff of the borrow checker is a

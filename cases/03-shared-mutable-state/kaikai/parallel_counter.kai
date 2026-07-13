@@ -1,0 +1,36 @@
+# The counter under real CPU load: 8 worker actors each grind a pure
+# tail-recursive sum, then send their partial to the counter (the mailbox
+# owner). KAI_THREADS=N spreads the workers across OS threads; the total
+# is deterministic regardless of N.
+
+import actor
+import spawn
+
+use Actor
+
+fn grind(i: Int, acc: Int) : Int =
+  if i <= 0 { acc }
+  else { grind(i - 1, acc + (i % 7)) }
+
+fn worker(parent: Pid[Int], load: Int) : Unit / Actor[Int] + Spawn =
+  send(parent, grind(load, 0))
+
+fn spawn_workers(parent: Pid[Int], n: Int, load: Int) : Unit / Spawn + Actor[Int] =
+  if n <= 0 { () }
+  else {
+    let _ = spawn_actor(() => worker(parent, load))
+    spawn_workers(parent, n - 1, load)
+  }
+
+fn collect(remaining: Int, acc: Int) : Int / Actor[Int] =
+  if remaining <= 0 { acc }
+  else { collect(remaining - 1, acc + receive()) }
+
+fn main() : Int / Spawn + Stdout = {
+  let total = with_mailbox {
+    spawn_workers(self(), 8, 300000000)
+    collect(8, 0)
+  }
+  Stdout.print("counter=#{int_to_string(total)}")
+  0
+}

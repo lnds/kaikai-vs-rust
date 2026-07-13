@@ -12,17 +12,17 @@ remote, no push — the owner reviews and publishes).
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.3**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.11**.
 
 ### Case status (who wins)
 
 | # | Case | Verdict |
 |---|------|---------|
-| 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect |
-| 3 | shared-mutable-state | even → Rust (parallelism) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"); Rust wins only on real multi-core |
+| 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect. (A 0.99.5 typer regression #1194 briefly blocked `cycle.kai`; fixed on 0.99.6, runs again — `trace=1 2 1 2 1 2`, both backends) |
+| 3 | shared-mutable-state | even (wall) → Rust (memory, default) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.99.11 the M:N scheduler (#1207 F1, PR #1211) closed the wall gap: `parallel_counter` at `KAI_THREADS=8` = 0.16 s vs Rust 8-thread 0.14 s (6.7× self-speedup, same total, both backends). Rust keeps: default-on (kaikai default N=1), shared memory (kaikai deep-copies cross-thread sends), and RSS — kai 722 MiB vs Rust 1.7 MiB on the same bench (the ~150 MiB/thread TLS-pool base, see below) |
 | 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.99 native codegen closed the gap: native≈C wall-clock (was ~2.5× slower) |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
-| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — on 0.99.3 kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.06 s / 155 MB vs Rust 0.01 s / 154 MB at N=10M. Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is now the *old* opt-out, not the point |
+| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.06 s / 155 MB vs Rust 0.01 s / 154 MB at N=10M (data cost; on 0.99.11 add the ~162 MiB M:N runtime base → 315 MiB measured). Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. On 0.99.5 `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — since 0.99.7 (#1197 fixed) **both backends trace identically** (pure-bump model: `arena_alloc=5050 incref=0` at N=100; churn at N=10k = `arena_alloc=50M` / ~1.7 GB on both — zero counting, no recycling) |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
 | — | shared-mutable-cache | discarded — `Rc<RefCell<HashMap>>` is safe, claim false |
 
@@ -53,10 +53,27 @@ as the record of why the repo runs every claim.
   incref/decref per touch (~1.3M ops at 100k), which is a cost, not a
   correctness bug. The zero-RC path is now `Vec[T]`, not `Array`.
 
-### Status on 0.99.3 (re-verified by measurement, 2026-07-10)
+### Status on 0.99.11 (re-verified by measurement, 2026-07-13)
+
+The 0.99.11 re-run: **all cases green, zero open bugs of ours** (#1197 fixed
+on 0.99.7, confirmed), **M:N parallelism shipped** (#1207 F1 via PR #1211,
+`KAI_THREADS=N`, default 1 — case 3 measured at wall parity with Rust
+threads), and **one new finding, filed as #1212**: the M:N TLS partitioning
+(PR #1210) made the RC pools (`kai_cell_pool` 1M×8 B + `kai_slot_pool` and
+`kai_var_block_pool` 9×1M×8 B each, `stage2/runtime.h`) thread-local, so every
+scheduler thread materialises ~152 MiB of pool tables — hello-world RSS went
+~2 MiB (0.99.6) → 161.6 MiB (0.99.11, `KAI_THREADS=1`) → 722 MiB at
+`KAI_THREADS=8`. As `static` these were lazily-paged .bss; as TLS the image is
+committed per thread. RC traces and data-cost scaling are unchanged (exactly
+1× per byte of data on `Vec`). Affects every RSS number quoted in the repo as
+a constant offset. Minor trace delta, same cause family: `layout.kai` now
+traces `leaked=4` (was 3) — constant, format strings, does not scale.
+
+### Status as of 0.99.6 (historical)
 
 Everything this repo filed as a bug is now **CLOSED and confirmed fixed by
-running it**, plus the value-record proposal shipped as `Vec[T]`:
+running it**, plus the value-record proposal shipped as `Vec[T]` and the
+region proposal shipped as `kind Region`:
 
 - **#1112** (`Array[boxed]` fill leak) — **fixed** (0.99.1). `Array[Record]`
   fill is `leaked≈1`, `free_total≈N`.
@@ -88,14 +105,60 @@ running it**, plus the value-record proposal shipped as `Vec[T]`:
   Rust `Vec` cost model proven by the refcount. Coexists with `Array[T]` (the
   mutable *reference*, `Mutable` in the row); intents don't overlap.
 
-Still open (design proposal, not a bug): **#1123** (`kind Region` — escaping
-arenas as a kind), narrowed by #1135 to trees / lifetime-batching / the
-escaping-generational case (`Vec` took the confined bulk case).
+- **#1123** (`kind Region` — arenas as a kind) — **shipped and closed on
+  0.99.5** (PR #1192), verified by running. Surface: `region { r -> ... }`
+  names a fresh region; a fn `[r: Region]` over `Tree<r>` bump-allocates its
+  ctors in that region's arena — the whole linked structure with **zero
+  per-node RC**, freed wholesale at the brace. The shipped fixture
+  (`examples/perceus/region_tree_1123.kai`, a 100-key BST folded to an Int)
+  traces `arena_alloc=5050 arena_free=5050 incref_total=0` on `--backend=c` —
+  cross-fn arena routing, reproduced with the installed 0.99.6. Escape is
+  handled by **deep-copy-out**: a `Tree<r>` that crosses the brace is cloned
+  onto the RC heap before the arena frees (`region_tree_escape_1123.kai` →
+  `arena_alloc=55`, `incref=9` for the clone). This is the case `Vec` cannot
+  do: `Vec[T]` is contiguous/flat; regions do bulk **linked** structures and
+  lifetime-batching. Two things stay follow-up: (a) the **generational**
+  escaping path (a `Tree<r>` used *by reference* after escape, and
+  `region { r1 -> region { r2 -> ... } }` nesting) — the CORE is sound because
+  no-escape is a copy, never a UAF; (b) **native vs C RC parity** — on 0.99.5
+  only the C backend routed to the arena; **0.99.6** (#1193) made native route
+  too, but native and C now **diverge** on the RC trace: on the shipped fixture
+  native traces `arena_alloc=100 incref_total=98` where C traces
+  `arena_alloc=5050 incref_total=0`, and a one-line change to the insert flips
+  which backend pays the per-node incref. Output is correct on both; filed as
+  **#1197**. Treat `--backend=c` as the reference cost model (`incref=0`) until
+  it settles. Bare `region { }` without the `<r>` binder is the old #120 form
+  (only lexically-inside ctors are arena-routed); the `<r>` binder is what broke
+  that "helpers don't arena-route" ceiling.
+
+**Regression cycle across 0.99.5 → 0.99.6 (both from re-running the suite):**
+
+- **#1194** (`CLOSED`, fixed on 0.99.6 via PR #1196) — a 0.99.5 typer regression:
+  a **reassigned record-typed `var`** whose field is read **inside a `#{}`
+  interpolation** errored `type annotation needed: the receiver of '.id' is not
+  resolved`. 7-line repro, no `Ref`/`import loop`. It **blocked case 1's
+  `cycle.kai`** on 0.99.5; on 0.99.6 the file compiles and runs unchanged
+  (`trace=1 2 1 2 1 2`, both backends). Filed → fixed on the next point release.
+
+- **#1197** (`CLOSED`, fixed on 0.99.7 via PR #1198, confirmed on 0.99.11) —
+  after #1193 taught the native backend to route region ctors to the arena,
+  native and C disagreed on the region RC trace. The fix converged both on the
+  **pure-bump model**: on `region_tree_1123.kai` both now trace
+  `arena_alloc=5050 arena_free=5050 incref_total=0`, and the escape fixture
+  agrees too (`arena_alloc=55`, `incref=9`). Consequence made explicit by the
+  convergence: a churning insert at N=10k bump-allocates every spine node on
+  *both* backends (`arena_alloc=50M`, ~1.7 GB) — the old native in-place-reuse
+  path is gone. Zero counting, no recycling; either backend is the reference
+  now.
 
 If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
 snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
-(#1048 was CLOSED-but-reopened).
+(#1048 was CLOSED-but-reopened). Two things to watch on the next upgrade:
+whether the per-thread pool RSS base (~152 MiB/thread, above) shrinks — the
+tell is hello-world RSS at `KAI_THREADS=1` — and whether the `KAI_THREADS`
+default flips to N=cores (#1207 F3), which would make case 3's "opt-in" caveat
+obsolete.
 
 ## Benchmarking notes
 
@@ -105,10 +168,17 @@ snapshot of the compiler and can move. Check state with
 - Force Rust to not constant-fold the whole program: read N from `argv` and wrap
   the result in `std::hint::black_box`, else `rustc -O` computes it at compile
   time and reports ~0 for everything.
-- On 0.99.3 native RSS is honest for the case-6 shape, so perf numbers use the
+- On 0.99.3+ native RSS is honest for the case-6 shape, so perf numbers use the
   **default native backend**; the C column only shows the codegen delta. The
   case-6 headline is now `Vec[Point]` (native = C: 0.06 s / 155 MB at N=10M),
   not the boxed `Array[Point]` row (853 MB) which is kept as the *old* opt-out.
+- Regions: since 0.99.7 (#1197 fixed) native and C trace identically
+  (pure-bump, `incref=0`) — either backend works; the old "quote the C column"
+  exception is retired.
+- **RSS on 0.99.11+ includes a ~152 MiB/thread runtime base** (M:N TLS pools),
+  even at default `KAI_THREADS=1`. When quoting memory, either state the base
+  separately (as case 6 does) or compare deltas; a raw `time -l` RSS is
+  data + base. Parallel benches at `KAI_THREADS=N` carry N× that base.
 - **Stack, not the compiler:** the `[Point]` linked-list version of case 6 uses
   non-tail recursion (`build`/`sum_x` with no accumulator) and **SIGSEGVs above
   ~100k** even with `ulimit -s` maxed (64 MB on macOS). So the list variant is
@@ -157,14 +227,13 @@ a pipe — `139` = SIGSEGV. RC behavior: `KAI_TRACE_RC=1 ./bin` prints
   slot inside a record" (case 1 uses `next: Ref[Option[Node]]`). This is *not* a
   Rust-style interior `&'a self` reference; the discarded self-referential case
   is about that borrow-shaped aliasing, not about `Ref`.
-- **`:=` gotcha:** the sugar accepts a bare capability/`Ref` binding (`r := v`),
-  an indexed slot (`a[i] := v`), and a field ending in an index
-  (`n.next[0] := v`) — but **NOT a `Ref`-typed field** (`n.next := v` where
-  `next: Ref[T]`). For a `Ref` field write `n.next.set(v)` or
-  `Mutable.ref_set(n.next, v)`. Filed as
-  [lnds/kaikai#1113](https://github.com/lnds/kaikai/issues/1113). Do not model a
-  record slot as a 1-cell `Array` just to get `:=`; that was the pre-#1113
-  workaround in case 1.
+- **`:=` on a `Ref`-typed field now works** (shipped in #1113, verified on
+  0.99.5): `a.next := Some(b)` where `next: Ref[Option[Node]]` compiles and runs
+  — that is case 1's form. The full sugar: `&x` makes a Ref, `@r` derefs,
+  `r := v` sets a bare `Ref` binding, `a[i] := v` an indexed slot, and
+  `record.field := v` a field (Ref-typed or not). The pre-#1113 workarounds
+  (`n.next.set(v)` / `Mutable.ref_set` / a 1-cell `Array`) are no longer needed;
+  don't reintroduce them.
 
 ## Conventions
 

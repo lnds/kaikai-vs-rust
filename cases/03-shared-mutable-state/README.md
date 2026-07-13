@@ -15,9 +15,12 @@ Expected total: `1+2+3+4+5 = 15`.
 > accesses the mutable cell `counter` escapes its block."* Both languages
 > refuse concurrent shared mutation at compile time and push you to a safe
 > model — Rust to `Arc<Mutex>`, kaikai to an **actor** (message-passing, no
-> shared memory). The one asymmetry that remains: Rust's `Arc<Mutex>` runs on
-> real OS threads across cores; kaikai's actor serialises on one fiber. So Rust
-> wins on *parallelism*, but no longer on *safety* — that part is now a wash.
+> shared memory). The one asymmetry that remained through 0.99.6: Rust's
+> `Arc<Mutex>` runs on real OS threads across cores; kaikai's actor serialised
+> on one scheduler thread. **On 0.99.11 that asymmetry closes on wall-clock**:
+> the M:N work-stealing scheduler runs actors across real cores
+> (`KAI_THREADS=N`), at wall parity with Rust threads on a CPU-bound bench —
+> but at a large fixed memory cost per scheduler thread (measured below).
 
 ## Rust — the idiomatic safe attempt fails
 
@@ -161,6 +164,56 @@ and segfaulted** ([lnds/kaikai#997](https://github.com/lnds/kaikai/issues/997));
 0.98 turned the runtime crash into this compile-time rejection — the safety
 story is now static on both sides.
 
+## kaikai 0.99.11 — real multi-core via `KAI_THREADS` (measured)
+
+kaikai **0.99.11** shipped F1 of the M:N work-stealing scheduler
+([#1207](https://github.com/lnds/kaikai/issues/1207) /
+[PR #1211](https://github.com/lnds/kaikai/pull/1211)): fibers and actors run
+on `KAI_THREADS=N` OS threads (default 1), messages are **physically copied**
+on a cross-thread send so the non-atomic Perceus RC survives, and the language
+surface does not change — no `Send`/`Sync`, no new annotation; the same actor
+code from above just runs on more cores.
+
+[`kaikai/parallel_counter.kai`](kaikai/parallel_counter.kai) puts the counter
+under real CPU load: 8 worker actors each grind a pure 300M-iteration sum and
+send their partial to the counter.
+[`rust/parallel_counter.rs`](rust/parallel_counter.rs) is the same shape with
+`thread::spawn` + `Arc<Mutex>`. Both print `counter=7200000024` — kaikai's
+total is identical at every `KAI_THREADS`, which is the determinism the copy
+buys.
+
+Measured on an Apple M4 Pro (14 cores), min of 6 warm runs, `--release` / `-O`:
+
+| Config | wall | speedup | peak RSS |
+|---|---|---|---|
+| kaikai, `KAI_THREADS=1` (default) | 1.07 s | 1× | ~162 MiB |
+| kaikai, `KAI_THREADS=4` | 0.29 s | 3.7× | ~402 MiB |
+| kaikai, `KAI_THREADS=8` | 0.16 s | 6.7× | 722.6 MiB |
+| Rust, 8 × `thread::spawn` | 0.14 s | — | 1.7 MiB |
+
+The C backend matches native (0.16 s at `KAI_THREADS=8`).
+
+Two honest caveats:
+
+- **Parallelism is opt-in.** The default is `KAI_THREADS=1` (byte-identical
+  with the old scheduler); the flip to N=cores is a planned upstream phase.
+- **The memory price is large and fixed.** On 0.99.11 the runtime materialises
+  ~150 MiB of thread-local RC pool tables **per scheduler thread** — an empty
+  `Stdout.print` program is 161.6 MiB resident at `KAI_THREADS=1` and 722 MiB
+  at 8, where the same base was ~2 MiB on 0.99.6. The TLS partitioning that
+  makes M:N sound turned lazily-paged static pools into eagerly-committed
+  per-thread images (filed as
+  [#1212](https://github.com/lnds/kaikai/issues/1212)). So on this bench
+  kaikai reaches wall parity with Rust
+  (0.16 s vs 0.14 s) while paying ~425× its RSS. Wall parity is real; the
+  memory story is not settled yet.
+
+There is also a structural asymmetry the numbers don't show: cross-thread
+sends **copy**. Partial sums are cheap to copy; a large shared structure is
+not. Rust's `Arc<Mutex>` shares one allocation across cores; kaikai's model
+deliberately never shares, so "N cores hammering one big piece of memory"
+remains a shape only Rust expresses.
+
 ## Reproduce
 
 ```sh
@@ -170,24 +223,31 @@ rustc --edition 2024 shared_state_arc_works.rs -o ss && ./ss    # counter=15
 cd ../kaikai
 kai run shared_state_actor.kai                                  # counter=15
 kai build shared_state_fibers_REJECTED.kai                      # compile error (escapes its block)
+
+# parallelism (kaikai 0.99.11+)
+kai build --release kaikai/parallel_counter.kai -o /tmp/pc
+time /tmp/pc                                                    # KAI_THREADS=1
+KAI_THREADS=8 sh -c 'time /tmp/pc'                              # ~6.7× faster, same total
+rustc --edition 2024 -O rust/parallel_counter.rs -o /tmp/pr
+time /tmp/pr 300000000
 ```
 
 ## Where Rust wins / the trade-off
 
-Safety is now symmetric — both languages reject shared mutable state across
-concurrency at compile time. The remaining asymmetry is parallelism:
+Safety is symmetric — both languages reject shared mutable state across
+concurrency at compile time. As of 0.99.11, wall-clock parallelism is close to
+symmetric too (measured above). What remains:
 
-- **Rust's `Arc<Mutex>` buys real multi-core parallelism.** Those five threads
-  run on different cores; the `Mutex` makes the shared write safe *under true
-  preemptive parallelism*. When you genuinely need N cores hammering one piece
-  of shared memory, this is doing strictly more than kaikai's actor.
-- **kaikai's actor serialises by construction.** No data race because the actor
-  processes one message at a time on its private heap — but that is
-  single-threaded for this counter, so it does **not** give the CPU-parallel
-  speedup the Rust version can. Same answer (`15`), different execution model.
-- **On safety and ergonomics they are now even.** Both reject the naive shared
-  mutation statically; kaikai's actor is arguably lighter to write than
-  `Arc<Mutex>` + `lock().unwrap()` + `Arc::clone`, while Rust's version, once it
-  compiles, gives real parallelism. Pick by whether you need message-passing
-  concurrency (kaikai reads cleaner) or shared-memory parallelism across cores
-  (Rust is the only one that delivers it here).
+- **Rust's parallelism is on by default and costs nothing at rest.** 8 threads,
+  1.7 MiB resident. kaikai's is opt-in (`KAI_THREADS`) and currently pays
+  ~150 MiB of runtime tables per scheduler thread — 722 MiB for the same bench.
+- **Rust can share; kaikai copies.** `Arc<Mutex>` gives N cores one allocation;
+  kaikai's cross-thread sends deep-copy the message. For partial results that
+  is free; for a large shared structure, Rust expresses a shape kaikai
+  deliberately does not.
+- **On safety and ergonomics they are even.** Both reject the naive shared
+  mutation statically; kaikai's actor is lighter to write than `Arc<Mutex>` +
+  `lock().unwrap()` + `Arc::clone`, keeps one execution model from 1 to N
+  threads, and its total is deterministic at every N. Pick by whether your
+  problem is message-shaped (kaikai reads cleaner, now scales too) or genuinely
+  shared-memory (Rust is still the only one that expresses it).
