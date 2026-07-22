@@ -13,17 +13,17 @@ public is the owner's call.
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.99.12**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.104.0**.
 
 ### Case status (who wins)
 
 | # | Case | Verdict |
 |---|------|---------|
 | 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect. (A 0.99.5 typer regression #1194 briefly blocked `cycle.kai`; fixed on 0.99.6, runs again — `trace=1 2 1 2 1 2`, both backends) |
-| 3 | shared-mutable-state | even (wall + memory) → Rust (default-on, sharing) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.99.11 the M:N scheduler (#1207 F1, PR #1211) closed the wall gap; on 0.99.12 (#1212 fixed, PR #1216) the RSS gap closed too: `parallel_counter` at `KAI_THREADS=8` = 0.14 s / 2.4 MiB vs Rust 8-thread 0.14 s / 1.7 MiB (~8× self-speedup, same total, both backends). Rust keeps: default-on (kaikai default N=1) and shared memory (kaikai deep-copies cross-thread sends) |
-| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.99 native codegen closed the gap: native≈C wall-clock (was ~2.5× slower) |
+| 3 | shared-mutable-state | even (wall, out of the box) → Rust (sharing + small RSS) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.104 parallelism is **default-on** (`KAI_THREADS` defaults to ncpu, cap 32 — #1207 F3 done): `parallel_counter` with no env var = 0.14 s vs Rust 8-thread 0.14 s, same total. Rust keeps: shared memory (kaikai deep-copies cross-thread sends) and a smaller footprint — the default multi-thread scheduler carries a constant ~10 MiB RSS base (12.8 MiB vs Rust 1.7 MiB on this bench; 1.8 MiB at `KAI_THREADS=1`) |
+| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.104 the C backend *beats* Rust on the depth-22 bench (0.15 s vs 0.21 s); the installed-native number (0.65 s) is the #1413 packaging defect (missing `runtime_inline.bc`), not codegen |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
-| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.07 s / 155.4 MiB vs Rust 0.01 s / 154 MB at N=10M (measured directly again on 0.99.12; the 0.99.11-only ~162 MiB runtime base that inflated it to 315 MiB is gone, #1212 fixed). Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. On 0.99.5 `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — since 0.99.7 (#1197 fixed) **both backends trace identically** (pure-bump model: `arena_alloc=5050 incref=0` at N=100; churn at N=10k = `arena_alloc=50M` / ~1.7 GB on both — zero counting, no recycling) |
+| 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.07 s / 155.6 MiB (C backend, re-measured on 0.104 at `KAI_THREADS=1`) vs Rust 0.01 s / 154 MB at N=10M. Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — **both backends trace identically** (pure-bump model: `arena_alloc=5050 arena_free=5050 incref=0` at N=100, re-confirmed on 0.104) |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
 | — | shared-mutable-cache | discarded — `Rc<RefCell<HashMap>>` is safe, claim false |
 
@@ -53,6 +53,50 @@ as the record of why the repo runs every claim.
   (see #1120 below): reading `a[i].field` in a fold still pays a balanced
   incref/decref per touch (~1.3M ops at 100k), which is a cost, not a
   correctness bug. The zero-RC path is now `Vec[T]`, not `Array`.
+
+### Status on 0.104.0 (re-verified by measurement, 2026-07-22)
+
+The 0.104.0 re-run: **all cases green, zero open bugs of ours.** Both
+leftovers from 0.99.12 are closed and confirmed by measurement:
+
+- **#1219 fixed** — the C backend's constant +6 `leaked` offset is gone, and
+  better: hello-world now traces `leaked=0` on **both** backends (was native 1
+  / C 7), `layout.kai` traces `leaked=2` byte-identical on both (was 4 / 10).
+- **#1207 F3 done — `KAI_THREADS` now defaults to ncpu (cap 32).** Case 3's
+  "opt-in" caveat is obsolete: `parallel_counter` with no env var = 0.14 s,
+  wall parity with Rust's 8-thread 0.14 s, same total. `KAI_THREADS=1`
+  remains the escape hatch (byte-identical cooperative scheduler).
+
+Three new operational findings, none a correctness bug of ours:
+
+- **Installed-native perf is broken by packaging, not codegen (#1413,
+  upstream, already fixed for the next release).** The 0.104.0 tarball ships
+  `runtime_llvm.bc` but not `runtime_inline.bc` (confirmed absent in
+  `~/.kaikai/share/kaikai/include/`), so the native modular path silently
+  skips ALL runtime inlining: bench_tree 0.65 s native vs 0.15 s C (~4.3×),
+  bench_vec 0.66 s native vs 0.07 s C (~10×). The C backend is at (or above)
+  historical native levels — **quote the C backend for perf until the tarball
+  fix lands**, then re-measure native. `kai --version` saying `native p2:
+  active` does NOT rule this out.
+- **RC traces now require `KAI_THREADS=1`** — with the default multi-thread
+  scheduler, `KAI_TRACE_RC` reports only the reporting thread's ledger
+  (#1338, open upstream): a depth-20 bench_tree prints `alloc_total=0` while
+  actually allocating 2.1M nodes. With `KAI_THREADS=1` the traces are
+  complete and match the historical model exactly (`reuse_in_place=2097151`
+  at depth 20, `reuse_in_place=5` on reuse_unique, `vec_inplace=100000
+  vec_cow=0 incref=0` on bench_vec, `arena_alloc=5050 arena_free=5050
+  incref=0` on bench_region — both backends identical on all of them).
+- **The default scheduler adds a constant ~10 MiB RSS base** (hello-world
+  10.5 MiB default vs 1.8 MiB at `KAI_THREADS=1`; flat from N=2 to N=8, and
+  unrelated to the old #1212 per-thread 152 MiB). It shows up in case 3
+  (12.8 vs Rust 1.7 MiB) and adds ~10 MiB to case 6 numbers measured at the
+  default. Data-cost scaling is unchanged (bench_vec 10M = 155.6 MiB at
+  `KAI_THREADS=1`). One 6-run sweep of bench_vec at the default showed a
+  single 308 MB outlier (likely a COW on an unlucky fiber migration) — not
+  reproduced since; worth re-checking next upgrade.
+
+Case 4's perf table gained a headline: **kaikai C now beats Rust** on the
+depth-22 unique-rewrite bench (0.15 s vs 0.21 s, and 189 vs 259 MiB RSS).
 
 ### Status on 0.99.12 (re-verified by measurement, 2026-07-13)
 
@@ -170,11 +214,18 @@ region proposal shipped as `kind Region`:
 If kaikai upgrades again, re-run the suite (below) — verdicts and perf are a
 snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
-(#1048 was CLOSED-but-reopened). To watch on the next upgrade: whether the
-`KAI_THREADS` default flips to N=cores (#1207 F3), which would make case 3's
-"opt-in" caveat obsolete, and whether #1219 (the C backend's constant +6
-bootstrap `leaked` offset, filed on 0.99.12) is fixed — the tell is
-hello-world C tracing `leaked=1` again.
+(#1048 was CLOSED-but-reopened). To watch on the next upgrade:
+
+- **#1413 tarball fix** — the next release should ship `runtime_inline.bc`
+  (check `~/.kaikai/share/kaikai/include/`); when it does, re-measure the
+  native columns of cases 4 and 6: native should return to ≈C (bench_tree
+  ~0.15 s, bench_vec ~0.07 s), retiring the "quote the C backend" rule below.
+- **#1338** (trace ledger is per-thread) — when fixed, `KAI_TRACE_RC` at the
+  default `KAI_THREADS` should stop printing `alloc_total=0`; until then all
+  traces run at `KAI_THREADS=1`.
+- Whether the constant ~10 MiB default-scheduler RSS base shrinks, and
+  whether the one-off 308 MB bench_vec outlier at the default scheduler
+  reproduces (a fiber-migration COW would be a real finding).
 
 ## Benchmarking notes
 
@@ -184,17 +235,24 @@ hello-world C tracing `leaked=1` again.
 - Force Rust to not constant-fold the whole program: read N from `argv` and wrap
   the result in `std::hint::black_box`, else `rustc -O` computes it at compile
   time and reports ~0 for everything.
-- On 0.99.3+ native RSS is honest for the case-6 shape, so perf numbers use the
-  **default native backend**; the C column only shows the codegen delta. The
-  case-6 headline is now `Vec[Point]` (native = C: 0.06 s / 155 MB at N=10M),
-  not the boxed `Array[Point]` row (853 MB) which is kept as the *old* opt-out.
-- Regions: since 0.99.7 (#1197 fixed) native and C trace identically
-  (pure-bump, `incref=0`) — either backend works; the old "quote the C column"
-  exception is retired.
-- **RSS is honest again on 0.99.12+**: the 0.99.11-only ~152 MiB/thread M:N
-  pool base is gone (#1212 fixed, PR #1216); hello-world is ~1.7 MiB at any
-  `KAI_THREADS`. A raw `time -l` RSS is the data cost. Numbers quoted from
-  0.99.11 carry that base — don't compare them raw against 0.99.12+ runs.
+- **On the installed 0.104.0, quote the C backend for wall-clock** — the
+  tarball is missing `runtime_inline.bc` (#1413), which cripples native by
+  4–10× on hot loops (bench_tree 0.65 s vs C 0.15 s; bench_vec 0.66 s vs C
+  0.07 s). Codegen itself is fine; re-measure native when the tarball fix
+  ships. The case-6 headline stays `Vec[Point]` (C: 0.07 s / 155.6 MiB at
+  N=10M), not the boxed `Array[Point]` row (853 MB), the *old* opt-out.
+- Regions: native and C trace identically (pure-bump, `incref=0`) — either
+  backend works for the *trace*; wall-clock follows the #1413 rule above.
+- **Run RC traces at `KAI_THREADS=1`** — with the default multi-thread
+  scheduler the ledger only covers the reporting thread (#1338): you'll see
+  `alloc_total=0` on a program that allocates millions of cells. This is a
+  trace artifact, not a leak or a fix.
+- **RSS on 0.104.0**: the default ncpu scheduler carries a constant ~10 MiB
+  base (hello-world 10.5 MiB; 1.8 MiB at `KAI_THREADS=1`) — far below the old
+  0.99.11 per-thread 152 MiB (#1212, fixed), but no longer negligible for
+  small-footprint comparisons. For data-cost numbers, measure at
+  `KAI_THREADS=1` or subtract the base; don't compare default-scheduler RSS
+  raw against 0.99.12 numbers.
 - **Stack, not the compiler:** the `[Point]` linked-list version of case 6 uses
   non-tail recursion (`build`/`sum_x` with no accumulator) and **SIGSEGVs above
   ~100k** even with `ulimit -s` maxed (64 MB on macOS). So the list variant is

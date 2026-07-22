@@ -170,7 +170,11 @@ Two things shape these numbers:
    the format strings). What remains on the boxed `Array` is per-access RC, not
    a leak: the fold pays a balanced incref/decref per touch
    (`incref_total≈600k + decref_total≈700k` at 100k). The numbers below use the
-   **default native backend**; the C column shows the codegen delta.
+   **default native backend**; the C column shows the codegen delta. (On the
+   installed **0.104.0**, quote the C column instead: the tarball is missing
+   `runtime_inline.bc`, so native skips runtime inlining and runs ~10× slower
+   — upstream [#1413](https://github.com/lnds/kaikai/issues/1413), a packaging
+   defect fixed for the next release, not codegen.)
 2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
    are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
    (64 MB on macOS). That is a property of the naive recursive shape, not the
@@ -216,6 +220,15 @@ complexity class. RC-op count for the whole 10M run: container and element
 traffic on the unique path is zero (in-place uniqueness), which is the point —
 the counting the borrow checker proves away, Perceus proves away at runtime
 with rc == 1.
+
+**Re-confirmed on 0.104.0** (C backend, `KAI_THREADS=1`): 0.07 s / 155.6 MiB
+at N=10M, `vec_inplace=100000 vec_cow=0 incref_total=0` at 100k — the cost
+model is unchanged. Two 0.104 measurement notes: RC traces must run at
+`KAI_THREADS=1` (the default M:N scheduler reports only the main thread's
+ledger — upstream [#1338](https://github.com/lnds/kaikai/issues/1338) — and
+prints a misleading `alloc_total=0`), and the default scheduler adds a
+constant ~10 MiB RSS base to any measurement (measure at `KAI_THREADS=1` for
+data cost).
 
 Two honest caveats:
 

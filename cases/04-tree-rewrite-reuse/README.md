@@ -108,7 +108,9 @@ cd rust
 rustc --edition 2024 tree_rebuild_rc.rs -o trc && ./trc   # orig=6 inc=9
 rustc --edition 2024 tree_makemut.rs   -o tmm && ./tmm    # unique new=9 / shared original=30 derived=32
 cd ../kaikai
-KAI_TRACE_RC=1 kai run reuse_unique.kai                          # new=9 / reuse_in_place=5
+# KAI_THREADS=1 keeps the RC trace complete (the default M:N scheduler only
+# reports the main thread's ledger — upstream #1338)
+KAI_THREADS=1 KAI_TRACE_RC=1 kai run reuse_unique.kai            # new=9 / reuse_in_place=5
 kai build --backend=native aliased_corruption.kai -o t && ./t   # before=6 orig_after=6 new=9
 kai build --backend=c      aliased_corruption.kai -o t && ./t   # before=6 orig_after=6 new=9
 ```
@@ -154,6 +156,15 @@ than native on this workload; on 0.99 they are within ~1.2× (native 0.13 s vs C
 0.11 s at 8.4M nodes), the gap having largely closed. The reuse story is
 unchanged — both do full in-place reuse — but the earlier throughput asterisk
 against native is now small.
+
+**Re-measured on 0.104.0 / rustc 1.92.0 (depth 22):** kaikai C **0.15 s /
+189 MiB** vs Rust `make_mut` **0.21 s / 259 MiB** — the C backend now leads
+Rust on both wall and RSS on this bench. The installed-native number (0.65 s)
+is not codegen: the 0.104.0 tarball is missing `runtime_inline.bc`, so native
+skips all runtime inlining (upstream
+[#1413](https://github.com/lnds/kaikai/issues/1413), fixed for the next
+release) — quote the C column until then. RC behavior re-confirmed intact at
+`KAI_THREADS=1`: `reuse_in_place=2097151` at depth 20, both backends.
 
 ## Where Rust wins / the trade-off
 
