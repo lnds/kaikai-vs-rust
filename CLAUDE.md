@@ -21,7 +21,7 @@ public is the owner's call.
 |---|------|---------|
 | 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect. (A 0.99.5 typer regression #1194 briefly blocked `cycle.kai`; fixed on 0.99.6, runs again — `trace=1 2 1 2 1 2`, both backends) |
 | 3 | shared-mutable-state | even (wall, out of the box) → Rust (sharing + small RSS) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.104 parallelism is **default-on** (`KAI_THREADS` defaults to ncpu, cap 32 — #1207 F3 done): `parallel_counter` with no env var = 0.14 s vs Rust 8-thread 0.14 s, same total. Rust keeps: shared memory (kaikai deep-copies cross-thread sends) and a smaller footprint — the default multi-thread scheduler carries a constant ~10 MiB RSS base (12.8 MiB vs Rust 1.7 MiB on this bench; 1.8 MiB at `KAI_THREADS=1`) |
-| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.104 the C backend *beats* Rust on the depth-22 bench (0.15 s vs 0.21 s); the installed-native number (0.65 s) is the #1413 packaging defect (missing `runtime_inline.bc`), not codegen |
+| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.104 **both kaikai backends beat Rust** on the depth-22 bench: C 0.15 s / native 0.17 s vs Rust 0.21 s (after restoring `runtime_inline.bc`, the #1413 packaging defect) |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
 | 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.07 s / 155.6 MiB (C backend, re-measured on 0.104 at `KAI_THREADS=1`) vs Rust 0.01 s / 154 MB at N=10M. Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — **both backends trace identically** (pure-bump model: `arena_alloc=5050 arena_free=5050 incref=0` at N=100, re-confirmed on 0.104) |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
@@ -69,15 +69,18 @@ leftovers from 0.99.12 are closed and confirmed by measurement:
 
 Three new operational findings, none a correctness bug of ours:
 
-- **Installed-native perf is broken by packaging, not codegen (#1413,
-  upstream, already fixed for the next release).** The 0.104.0 tarball ships
-  `runtime_llvm.bc` but not `runtime_inline.bc` (confirmed absent in
-  `~/.kaikai/share/kaikai/include/`), so the native modular path silently
-  skips ALL runtime inlining: bench_tree 0.65 s native vs 0.15 s C (~4.3×),
-  bench_vec 0.66 s native vs 0.07 s C (~10×). The C backend is at (or above)
-  historical native levels — **quote the C backend for perf until the tarball
-  fix lands**, then re-measure native. `kai --version` saying `native p2:
-  active` does NOT rule this out.
+- **Native perf was broken by packaging, not codegen (#1413) — RESOLVED
+  locally by installing `runtime_inline.bc`.** The 0.104.0 tarball shipped
+  `runtime_llvm.bc` but not `runtime_inline.bc`, so the native modular path
+  silently skipped ALL runtime inlining: bench_tree 0.65 s native vs 0.15 s C
+  (~4.3×), bench_vec 0.66 s vs 0.07 s (~10×), while `kai --version` still
+  said `native p2: active`. With the bitcode restored (2026-07-22, present in
+  `~/.kaikai/share/kaikai/include/`) native recovered: bench_tree **0.17 s**
+  (≈C 0.15 s, parity back) and bench_vec **0.10 s** — which leaves a real
+  ~1.4× native-vs-C codegen residual on the Vec workload (0.99.12 had them
+  identical at 0.07 s; confirmed not the core cache — wiping it changes
+  nothing — and not the scheduler — same at `KAI_THREADS=1`). Traces and RSS
+  are identical across backends; the residual is wall-clock only.
 - **RC traces now require `KAI_THREADS=1`** — with the default multi-thread
   scheduler, `KAI_TRACE_RC` reports only the reporting thread's ledger
   (#1338, open upstream): a depth-20 bench_tree prints `alloc_total=0` while
@@ -216,10 +219,10 @@ snapshot of the compiler and can move. Check state with
 `gh issue view <N> --repo lnds/kaikai --json state` **and read the comments**
 (#1048 was CLOSED-but-reopened). To watch on the next upgrade:
 
-- **#1413 tarball fix** — the next release should ship `runtime_inline.bc`
-  (check `~/.kaikai/share/kaikai/include/`); when it does, re-measure the
-  native columns of cases 4 and 6: native should return to ≈C (bench_tree
-  ~0.15 s, bench_vec ~0.07 s), retiring the "quote the C backend" rule below.
+- **The ~1.4× native-vs-C residual on bench_vec** (native 0.10 s vs C
+  0.07 s with runtime inlining active; they were identical on 0.99.12) —
+  whether a later release closes it. bench_tree is already back at parity
+  (0.17 vs 0.15 s), so it's Vec-shaped, not general.
 - **#1338** (trace ledger is per-thread) — when fixed, `KAI_TRACE_RC` at the
   default `KAI_THREADS` should stop printing `alloc_total=0`; until then all
   traces run at `KAI_THREADS=1`.
@@ -235,14 +238,18 @@ snapshot of the compiler and can move. Check state with
 - Force Rust to not constant-fold the whole program: read N from `argv` and wrap
   the result in `std::hint::black_box`, else `rustc -O` computes it at compile
   time and reports ~0 for everything.
-- **On the installed 0.104.0, quote the C backend for wall-clock** — the
-  tarball is missing `runtime_inline.bc` (#1413), which cripples native by
-  4–10× on hot loops (bench_tree 0.65 s vs C 0.15 s; bench_vec 0.66 s vs C
-  0.07 s). Codegen itself is fine; re-measure native when the tarball fix
-  ships. The case-6 headline stays `Vec[Point]` (C: 0.07 s / 155.6 MiB at
-  N=10M), not the boxed `Array[Point]` row (853 MB), the *old* opt-out.
+- **Native wall-clock is only honest if `runtime_inline.bc` is installed**
+  (`~/.kaikai/share/kaikai/include/`) — without it the native modular path
+  silently skips runtime inlining and runs 4–10× slow (#1413), with
+  `kai --version` still reporting `native p2: active`. Check the file before
+  trusting a native number. With it present (0.104.0): bench_tree native
+  0.17 s ≈ C 0.15 s; bench_vec native 0.10 s vs C 0.07 s (~1.4× residual,
+  Vec-shaped). The case-6 headline stays `Vec[Point]` (C: 0.07 s /
+  155.6 MiB at N=10M), not the boxed `Array[Point]` row (853 MB), the *old*
+  opt-out.
 - Regions: native and C trace identically (pure-bump, `incref=0`) — either
-  backend works for the *trace*; wall-clock follows the #1413 rule above.
+  backend works for the *trace*; for wall-clock check the inline-bitcode
+  rule above.
 - **Run RC traces at `KAI_THREADS=1`** — with the default multi-thread
   scheduler the ledger only covers the reporting thread (#1338): you'll see
   `alloc_total=0` on a program that allocates millions of cells. This is a
