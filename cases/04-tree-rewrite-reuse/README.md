@@ -157,15 +157,18 @@ than native on this workload; on 0.99 they are within ~1.2× (native 0.13 s vs C
 unchanged — both do full in-place reuse — but the earlier throughput asterisk
 against native is now small.
 
-**Re-measured on 0.104.0 / rustc 1.92.0 (depth 22):** kaikai C **0.15 s** /
-native **0.17 s**, both at ~189 MiB, vs Rust `make_mut` **0.21 s / 259 MiB**
-— both kaikai backends now lead Rust on wall and RSS on this bench. One
-prerequisite for the native number: `runtime_inline.bc` must be present in
-the install (`~/.kaikai/share/kaikai/include/`) — the 0.104.0 tarball shipped
-without it (upstream [#1413](https://github.com/lnds/kaikai/issues/1413)),
-which silently disables runtime inlining and inflates native to 0.65 s. RC
-behavior re-confirmed intact at `KAI_THREADS=1`: `reuse_in_place=2097151` at
-depth 20, both backends.
+**Re-measured on 0.114.0 / rustc 1.92.0 (depth 22, min of 10 warm runs):**
+kaikai C **0.19 s** / native **0.20 s**, both at **179 MiB**, vs Rust
+`make_mut` **0.19 s / 259 MiB** — wall parity, with kaikai ~30% below Rust
+on peak RSS. This retreats from the 0.104.0 measurement (C 0.15 s vs Rust
+0.21 s), where both kaikai backends led on wall; the honest claim across
+versions is **parity on wall, a kaikai edge on memory**. The native-vs-C
+gap is gone here (0.20 vs 0.19 s). `runtime_inline.bc` ships in the 0.114.0
+tarball, so the native-inlining trap that skewed 0.104 numbers (upstream
+[#1413](https://github.com/lnds/kaikai/issues/1413)) no longer needs a
+manual fix — but still check the file is present before trusting a native
+number. RC behavior re-confirmed intact at `KAI_THREADS=1`:
+`reuse_in_place=2097151` at depth 20, both backends.
 
 ## Where Rust wins / the trade-off
 

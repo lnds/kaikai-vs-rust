@@ -6,6 +6,10 @@ effect Audit {
   note(msg: String) : Unit
 }
 
+effect Fail {
+  fail(msg: String) : Nothing
+}
+
 # Business logic: pure-looking, but performs Fetch + Audit + Fail.
 # No async/await, no Result threading, no ? at every call.
 fn pipeline(url: String) : Int / Fetch + Audit + Fail = {

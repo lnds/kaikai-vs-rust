@@ -14,7 +14,7 @@ one.
 
 ## Disclaimer / methodology
 
-- **Verified with `rustc 1.92.0` and `kaikai 0.99.12` (hanga-roa, stage 2).**
+- **Verified with `rustc 1.92.0` and `kaikai 0.114.0` (hanga-roa, stage 2).**
   kaikai has two backends, a default `native` (LLVM) and `--backend=c`; both are
   exercised where a result could differ. Building this repo on 0.94 surfaced
   three compiler bugs (filed as lnds/kaikai#995–997); **all three are fixed as

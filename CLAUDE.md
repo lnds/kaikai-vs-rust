@@ -13,7 +13,7 @@ public is the owner's call.
   error and the real kaikai output.
 - `discarded/` — candidate claims that turned out false under compilation,
   documented not deleted.
-- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.104.0**.
+- Verified against **rustc 1.92.0 (edition 2024)** and **kaikai 0.114.0**.
 
 ### Case status (who wins)
 
@@ -21,7 +21,7 @@ public is the owner's call.
 |---|------|---------|
 | 1 | cyclic-graph | kaikai (ergonomics) — `&` refs rejected E0506; kaikai uses `Mutable` effect. (A 0.99.5 typer regression #1194 briefly blocked `cycle.kai`; fixed on 0.99.6, runs again — `trace=1 2 1 2 1 2`, both backends) |
 | 3 | shared-mutable-state | even (wall, out of the box) → Rust (sharing + small RSS) — **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"). On 0.104 parallelism is **default-on** (`KAI_THREADS` defaults to ncpu, cap 32 — #1207 F3 done): `parallel_counter` with no env var = 0.14 s vs Rust 8-thread 0.14 s, same total. Rust keeps: shared memory (kaikai deep-copies cross-thread sends) and a smaller footprint — the default multi-thread scheduler carries a constant ~10 MiB RSS base (12.8 MiB vs Rust 1.7 MiB on this bench; 1.8 MiB at `KAI_THREADS=1`) |
-| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.104 **both kaikai backends beat Rust** on the depth-22 bench: C 0.15 s / native 0.17 s vs Rust 0.21 s (after restoring `runtime_inline.bc`, the #1413 packaging defect) |
+| 4 | tree-rewrite-reuse | kaikai (ergonomics) — unique reuse `reuse_in_place=5`, shared case copies correctly, both backends (was split on 0.94). On 0.114 the depth-22 bench is **wall parity** (C 0.19 s / native 0.20 s vs Rust 0.19 s) with kaikai ~30% below on RSS (179 vs 259 MiB) — the 0.104 kaikai wall lead did not hold |
 | 5 | effects-vs-boilerplate | kaikai (ergonomics) — viral `async` vs discharged effect row |
 | 6 | flat-layout-no-rc | **Rust** (absolute wall only) — kaikai's `Vec[Point]` (value vector, unboxed inline, in-place when unique) matches Rust's memory model: 0.07 s / 155.6 MiB (C backend, re-measured on 0.104 at `KAI_THREADS=1`) vs Rust 0.01 s / 154 MB at N=10M. Rust still wins the wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. The boxed `Array[Point]` row (853 MB) is the *old* opt-out. `kind Region` adds the **linked**-in-arena story Vec can't: a `Tree<r>` folded to a scalar traces `incref=0` / one wholesale free — **both backends trace identically** (pure-bump model: `arena_alloc=5050 arena_free=5050 incref=0` at N=100, re-confirmed on 0.104) |
 | — | self-referential | discarded — kaikai has no interior references; problem can't be expressed |
@@ -53,6 +53,49 @@ as the record of why the repo runs every claim.
   (see #1120 below): reading `a[i].field` in a fold still pays a balanced
   incref/decref per touch (~1.3M ops at 100k), which is a cost, not a
   correctness bug. The zero-RC path is now `Vec[T]`, not `Array`.
+
+### Status on 0.114.0 (re-verified by measurement, 2026-09-04)
+
+The 0.114.0 re-run: **all cases green after one source fix; zero open bugs of
+ours.** One real regression surfaced, in the repo's own source, not the
+compiler:
+
+- **`Fail` was dropped from the builtin effect catalog.** `case 5`'s
+  `swap_handlers.kai` declared `pipeline : Int / Fetch + Audit + Fail` and
+  called `Fail.fail(...)` without ever declaring the effect — it compiled on
+  older releases because `Fail` was in the builtin catalog. On 0.114 the
+  catalog is `Console, Stdin, Env, File, State, Reader, Writer, Mutable, Ffi`
+  and the file errors `unknown effect: Fail`. **Fixed in-repo** by declaring
+  `effect Fail { fail(msg: String) : Nothing }` alongside `Fetch`/`Audit` —
+  which is the more honest fixture anyway (the case is about user-declared
+  effect rows). Output matches the README byte for byte again: `[audit]…
+  result=18`, both backends. `kai info effects` shows the same shape as
+  `effect Failure { fail(msg) : Nothing }`, a user effect.
+
+Everything else is unchanged or better:
+
+- **`runtime_inline.bc` now ships in the tarball** (#1413's packaging defect is
+  gone — present in `~/.kaikai/share/kaikai/include/` on a clean install).
+  Still worth checking before trusting a native wall number.
+- **Trace hygiene improved:** `layout.kai` now traces `leaked=0` on both
+  backends (was `leaked=2` on 0.104); hello-world stays `leaked=0`.
+- **Case 4 lost its wall lead, kept its memory lead.** Depth-22, min of 10 warm
+  runs: kaikai C **0.19 s** / native **0.20 s** / Rust **0.19 s**, kaikai
+  **179 MiB** vs Rust **259 MiB**. On 0.104 kaikai C led at 0.15 s vs 0.21 s;
+  that did not hold. The native-vs-C gap on this workload is gone.
+- **Case 6 unchanged:** bench_vec N=10M at `KAI_THREADS=1` — C 0.07 s / native
+  0.10 s / Rust 0.01 s, all ~155 MiB. The ~1.4× native-vs-C Vec-shaped
+  residual persists.
+- **Case 3 unchanged:** `parallel_counter` default = 0.14 s / 12.9 MiB vs Rust
+  8-thread 0.14 s / 1.7 MiB; `KAI_THREADS=1` = 1.07 s / 3.5 MiB.
+- **The ~10 MiB default-scheduler RSS base persists** (hello-world 11.3 MiB
+  default vs 1.8 MiB at `KAI_THREADS=1`, both backends).
+- **#1338 still open** — RC traces still need `KAI_THREADS=1`.
+- All RC traces byte-identical across backends and consistent with 0.104:
+  `reuse_in_place=5` / `=2097151` at depth 20, `arena_alloc=5050 arena_free=5050
+  incref=0`, `vec_inplace` model intact.
+- The 0.104 one-off 308 MB bench_vec outlier at the default scheduler **did not
+  reproduce**.
 
 ### Status on 0.104.0 (re-verified by measurement, 2026-07-22)
 
@@ -220,15 +263,23 @@ snapshot of the compiler and can move. Check state with
 (#1048 was CLOSED-but-reopened). To watch on the next upgrade:
 
 - **The ~1.4× native-vs-C residual on bench_vec** (native 0.10 s vs C
-  0.07 s with runtime inlining active; they were identical on 0.99.12) —
-  whether a later release closes it. bench_tree is already back at parity
-  (0.17 vs 0.15 s), so it's Vec-shaped, not general.
-- **#1338** (trace ledger is per-thread) — when fixed, `KAI_TRACE_RC` at the
-  default `KAI_THREADS` should stop printing `alloc_total=0`; until then all
-  traces run at `KAI_THREADS=1`.
-- Whether the constant ~10 MiB default-scheduler RSS base shrinks, and
-  whether the one-off 308 MB bench_vec outlier at the default scheduler
-  reproduces (a fiber-migration COW would be a real finding).
+  0.07 s, unchanged 0.104 → 0.114; they were identical on 0.99.12) — whether
+  a later release closes it. bench_tree is at parity, so it's Vec-shaped,
+  not general.
+- **Case 4's wall result moves between releases** — 0.104 had kaikai C
+  leading Rust (0.15 vs 0.21 s), 0.114 is parity (0.19 s both). Re-measure
+  rather than carrying the previous headline forward. The RSS lead
+  (179 vs 259 MiB) has been stable.
+- **The builtin effect catalog can shrink.** `Fail` was in it through 0.104
+  and is gone on 0.114 (catalog: `Console, Stdin, Env, File, State, Reader,
+  Writer, Mutable, Ffi`). Fixtures that lean on a builtin effect break
+  silently across upgrades — declare effects in the fixture.
+- **#1338** (trace ledger is per-thread) — still open on 0.114; when fixed,
+  `KAI_TRACE_RC` at the default `KAI_THREADS` should stop printing
+  `alloc_total=0`. Until then all traces run at `KAI_THREADS=1`.
+- Whether the constant ~10 MiB default-scheduler RSS base shrinks (unchanged
+  on 0.114). The one-off 308 MB bench_vec outlier did **not** reproduce on
+  0.114.
 
 ## Benchmarking notes
 
@@ -241,12 +292,12 @@ snapshot of the compiler and can move. Check state with
 - **Native wall-clock is only honest if `runtime_inline.bc` is installed**
   (`~/.kaikai/share/kaikai/include/`) — without it the native modular path
   silently skips runtime inlining and runs 4–10× slow (#1413), with
-  `kai --version` still reporting `native p2: active`. Check the file before
-  trusting a native number. With it present (0.104.0): bench_tree native
-  0.17 s ≈ C 0.15 s; bench_vec native 0.10 s vs C 0.07 s (~1.4× residual,
-  Vec-shaped). The case-6 headline stays `Vec[Point]` (C: 0.07 s /
-  155.6 MiB at N=10M), not the boxed `Array[Point]` row (853 MB), the *old*
-  opt-out.
+  `kai --version` still reporting `native p2: active`. 0.114.0 ships it in
+  the tarball; 0.104.0 did not. Check the file before trusting a native
+  number. On 0.114.0: bench_tree native 0.20 s ≈ C 0.19 s; bench_vec native
+  0.10 s vs C 0.07 s (~1.4× residual, Vec-shaped). The case-6 headline stays
+  `Vec[Point]` (C: 0.07 s / 155 MiB at N=10M), not the boxed `Array[Point]`
+  row (853 MB), the *old* opt-out.
 - Regions: native and C trace identically (pure-bump, `incref=0`) — either
   backend works for the *trace*; for wall-clock check the inline-bitcode
   rule above.
@@ -254,8 +305,8 @@ snapshot of the compiler and can move. Check state with
   scheduler the ledger only covers the reporting thread (#1338): you'll see
   `alloc_total=0` on a program that allocates millions of cells. This is a
   trace artifact, not a leak or a fix.
-- **RSS on 0.104.0**: the default ncpu scheduler carries a constant ~10 MiB
-  base (hello-world 10.5 MiB; 1.8 MiB at `KAI_THREADS=1`) — far below the old
+- **RSS since 0.104.0**: the default ncpu scheduler carries a constant ~10 MiB
+  base (hello-world 11.3 MiB on 0.114; 1.8 MiB at `KAI_THREADS=1`) — far below the old
   0.99.11 per-thread 152 MiB (#1212, fixed), but no longer negligible for
   small-footprint comparisons. For data-cost numbers, measure at
   `KAI_THREADS=1` or subtract the base; don't compare default-scheduler RSS
@@ -303,6 +354,11 @@ a pipe — `139` = SIGSEGV. RC behavior: `KAI_TRACE_RC=1 ./bin` prints
   `Mutable` effect in the row; `var` desugars to a `State` handler; the
   idiomatic concurrent-state form is an **actor** (`with_mailbox`), not a
   shared `var`.
+- **The builtin effect catalog is `Console, Stdin, Env, File, State, Reader,
+  Writer, Mutable, Ffi`** (plus the runtime set `Stdin/Stdout/Stderr/Env/File`
+  installed at `main`). `Fail` is *not* builtin on 0.114 — declare it
+  (`effect Fail { fail(msg: String) : Nothing }`). Check with
+  `kai info effects` rather than assuming a name is in the catalog.
 - `Ref[T]` is a first-class mutable heap cell (`Mutable.ref_make/ref_get/
   ref_set`, or `.set(v)`/`.get()` via UFCS) — the right primitive for "a mutable
   slot inside a record" (case 1 uses `next: Ref[Option[Node]]`). This is *not* a
