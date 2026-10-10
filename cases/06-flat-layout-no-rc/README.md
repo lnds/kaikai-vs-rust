@@ -311,6 +311,37 @@ Two honest caveats:
   per touch on a record array — the cache-friendly layout is eaten by that
   per-access counting, not by a bug.
 
+### Re-measured on 0.139.6 / rustc 1.98.1
+
+0.139.6 reads and writes `Int` / `Real` `Vec` elements as raw machine words:
+the per-element runtime call and the boxed `+` are gone from the native loop
+(kaikai PR #2670). Same machine as the 0.139.2 run, min of 6 warm runs after
+one warm-up, kaikai at `KAI_THREADS=1`, 0.139.5 measured in the same session
+as the before:
+
+| Implementation | N=1M | N=10M |
+|----------------|-----:|------:|
+| Rust `Vec<Point>` (`-O`)            | 3.2 ms  | 15.0 ms / 154.2 MiB |
+| kaikai `Vec[Point]`, native, 0.139.6 | **7.7 ms** | **52.8 ms / 155.5 MiB** |
+| kaikai `Vec[Point]`, C, 0.139.6      | 10.5 ms | 79.1 ms / 155.6 MiB |
+| kaikai `Vec[Point]`, native, 0.139.5 | 14.1 ms | 120.3 ms / 155.5 MiB |
+| kaikai `Vec[Point]`, C, 0.139.5      | 10.0 ms | 79.1 ms / 155.6 MiB |
+
+- **The wall gap to Rust went from ~8× to ~3.5×** at 10M, on the native
+  backend. Native went from 1.5× slower than C to 1.5× faster.
+- **The model did not change.** Trace at 100k on both backends:
+  `alloc_total=9 vec_inplace=100000 vec_cow=0 incref_total=0`; RSS within
+  1% of Rust.
+- **What is left is not vectorization.** The released compiler links LLVM 18,
+  which does not vectorize this loop ("could not determine number of loop
+  iterations"); a build linked against LLVM 22 does, and measured ~4 ms of the
+  ~53 ms on this machine. Most of the remaining gap is building the vector:
+  a fill-only variant (same `fill`, prints `vec_length` instead of summing)
+  takes 54 ms of the full program's 60 ms in a second pass on a slightly
+  busier machine. Each `vec.push` re-checks uniqueness and shape, where
+  Rust's `collect()` writes into a pre-sized buffer.
+- The verdict stays **Rust (absolute wall only)**.
+
 ## The sub-case Vec can't do: `kind Region` (linked structures in an arena)
 
 `Vec[T]` closed the memory model for *flat* bulk data, but it is contiguous —
