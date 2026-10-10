@@ -4,7 +4,6 @@
 # is deterministic regardless of N.
 
 import actor
-import spawn
 
 use Actor
 

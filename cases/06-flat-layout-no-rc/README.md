@@ -74,18 +74,24 @@ summed — no hand-written recursion. Run with the RC tracer
 
 ```text
 total=500500
-[KAI_TRACE_RC] alloc_total=6007 free_total=6004 leaked=3 live_peak=2001
-[KAI_TRACE_RC]   tag cons    allocs=5002
+[KAI_TRACE_RC] alloc_total=4006 free_total=4006 leaked=0 live_peak=2001
+[KAI_TRACE_RC]   tag cons    allocs=2002
 [KAI_TRACE_RC]   tag record  allocs=1000
-[KAI_TRACE_RC]   incref_total=15995 decref_total=21999
+[KAI_TRACE_RC]   incref_total=7997 decref_total=12003
 ```
 
-For the same 1000 points: 1000 `Point` records + several thousand linked-list
-`cons` cells, and **~38000 reference-count operations** (`incref_total=15995` +
-`decref_total=21999`). `[Point]` is a **linked list**, not a contiguous buffer —
+For the same 1000 points: 1000 `Point` records + two thousand linked-list
+`cons` cells, and **~20000 reference-count operations** (`incref_total=7997` +
+`decref_total=12003`). `[Point]` is a **linked list**, not a contiguous buffer —
 each element is a separate heap node with its own count, not 16 inline bytes in
 one block. That per-node RC is the cost the case is about, and Rust's `Vec` pays
 none of it.
+
+> The trace above is kaikai 0.139.2. Through 0.114 the same program traced
+> `alloc_total=6007` (5002 `cons` cells) and ~38000 RC operations: the compiler
+> now builds 3000 fewer intermediate list cells for this pipeline and does about
+> half the counting. A smaller constant on the same per-node model — the
+> comparison with Rust's zero is unchanged in kind.
 
 > History note on the trace: on kaikai 0.99.0 this same program showed
 > `leaked=1003` — a real compiler bug where the record-projecting map `| (.x)`
@@ -121,8 +127,10 @@ The `## Performance` table below uses parametrized versions that read N from
 ```sh
 # Rust: Vec<Point>, black_box'd
 rustc --edition 2024 -O rust/bench_layout.rs -o /tmp/bl && /tmp/bl 1000000
-# kaikai: linked list (SIGSEGVs above ~100k — non-tail recursion)
+# kaikai: linked list (non-tail recursion — overflows the stack somewhere
+# above 100k unless you raise it; see "Performance at scale", note 2)
 kai build --release kaikai/bench_list.kai  -o /tmp/kl && /tmp/kl 100000
+(ulimit -s 65520; /tmp/kl 1000000)          # 1M runs with the stack raised
 # kaikai: Array[Point], tail-recursive — reaches 1M/10M
 kai build --release kaikai/bench_array.kai -o /tmp/ka && /tmp/ka 1000000
 # kaikai: Vec[Point] — the value vector (0.99.3)
@@ -177,11 +185,19 @@ Two things shape these numbers:
    [#1413](https://github.com/lnds/kaikai/issues/1413). With it restored,
    native is 0.10 s vs C 0.07 s at 10M — a ~1.4× residual on the Vec
    workload, wall-clock only.)
-2. **The `[Point]` linked-list version cannot reach 1M.** Its `build`/`sum_x`
-   are non-tail recursive and **SIGSEGV above ~100k** even with the stack maxed
-   (64 MB on macOS). That is a property of the naive recursive shape, not the
-   compiler — but it means the honest list number is at N=100k, and only the
-   tail-recursive `Array` variant (and Rust) reach 1M+.
+2. **The `[Point]` linked-list version is stack-bound.** Its `build`/`sum_x`
+   are non-tail recursive, so its ceiling is the main stack — a property of
+   the naive recursive shape, not the compiler. Through 0.114 it SIGSEGV'd
+   above ~100k even with the stack maxed (64 MB on macOS). **On 0.139.2 the
+   ceiling moved and depends on backend and scheduler**: at the stock 8 MiB
+   stack, native runs 150k and overflows at 200k; the C backend overflows at
+   150k under the default scheduler but runs 1M at `KAI_THREADS=1`. With
+   `ulimit -s 65520` 1M runs on both backends in both modes (3M does not),
+   and under the default scheduler the overflow is now a diagnosed
+   `kai: fiber stack overflow` rather than a bare SIGSEGV. So N=100k is still
+   the size that runs everywhere with no setup, and the list's 1M number
+   below carries a raised-stack asterisk; only the tail-recursive `Array` /
+   `Vec` variants (and Rust) reach 10M.
 
 **N = 100,000** (the ceiling the list survives), all three shapes:
 
@@ -233,6 +249,56 @@ prints a misleading `alloc_total=0`), and the default scheduler adds a
 constant ~10 MiB RSS base to any measurement (measure at `KAI_THREADS=1` for
 data cost).
 
+### Re-measured on 0.139.2 / rustc 1.99.0
+
+The tables above are the 0.99.3 measurement, kept as the record. This is the
+full re-run on 0.139.2 — on a different machine (Apple M3 Max; the earlier
+numbers came from an M4 Pro, ~1.15× faster per core), so every row including
+Rust was measured again. Min of 6–15 warm runs, kaikai at `KAI_THREADS=1`:
+
+| Implementation | N=100k | N=1M | N=10M |
+|----------------|-------:|-----:|------:|
+| Rust `Vec<Point>` (`-O`)        | 0.00 s / 3.1 MiB  | 0.00 s / 16.9 MiB | 0.01 s / 154.2 MiB |
+| kaikai `Vec[Point]`, C          | 0.00 s / 4.5 MiB  | 0.01 s / 18.2 MiB | **0.08 s / 155.6 MiB** |
+| kaikai `Vec[Point]`, native     | 0.00 s / 4.5 MiB  | 0.01 s / 18.2 MiB | 0.14 s / 155.5 MiB |
+| kaikai `Array[Point]`, C        | 0.00 s / 11.1 MiB | 0.07 s / 93.9 MiB | 0.79 s / 852.9 MiB |
+| kaikai `Array[Point]`, native   | 0.00 s / 11.1 MiB | 0.07 s / 93.8 MiB | 0.82 s / 852.9 MiB |
+| kaikai `[Point]` list, C        | 0.01 s / 21.8 MiB | 0.09 s / 193.6 MiB\* | — |
+| kaikai `[Point]` list, native   | 0.01 s / 20.2 MiB | 0.09 s / 178.3 MiB\* | — |
+
+\* with `ulimit -s 65520`; see note 2 above.
+
+What held, what moved:
+
+- **The verdict held.** `Vec[Point]` is still memory parity with Rust (155.6
+  vs 154.2 MiB, under 1%) and still loses the wall by a small constant (~8×
+  against a `black_box`'d loop that LLVM vectorises to the timer's
+  resolution). The trace is the same model on both backends:
+  `vec_inplace=100000 vec_cow=0 incref_total=0`, 9 allocations for 100k
+  elements.
+- **Native fell further behind C on `Vec`.** 0.14 s vs 0.08 s is ~1.6×; it was
+  ~1.4× on 0.104/0.114 and they were identical on 0.99.12. Wall-clock only —
+  RSS and traces match.
+- **The boxed `Array[Point]` row regressed on wall-clock.** ~0.8 s at 10M on
+  both backends, against 0.39 s (native) / 0.58 s (C) in the 0.99.3 table. The
+  slower machine accounts for ~1.15× of that, not 2×. Memory is identical
+  (853 MiB) and so is the counting (`incref_total=600002
+  decref_total=700011` at 100k, exactly as before), so the extra time is not
+  extra RC. This row was not re-measured between 0.99.3 and 0.139.2, so the
+  release that introduced it is not known. It widens the gap `Vec` exists to
+  close — `Vec` is now ~10× faster than boxed `Array` on the C backend — but
+  it is a real regression on the old opt-out, stated as such.
+- **The list got cheaper.** At 100k it now traces `alloc_total=200008`
+  (100k records + 100k `cons` cells) and ~0.6M RC operations
+  (`incref_total=199999` + `decref_total=400006`) — down from ~0.3M
+  allocations and ~1.1M operations. And it reaches 1M with the stack raised:
+  0.09 s and ~180–195 MiB, i.e. ~11× Rust's memory for the same million
+  points.
+- **Measurement hygiene improved.** RC traces are complete under the default
+  scheduler (#1338's `alloc_total=0` artifact is gone), and that scheduler's
+  fixed RSS base is ~2 MiB instead of ~10 MiB — `bench_vec` at 10M reads
+  158.0 MiB at the default vs 155.5 MiB pinned to one thread.
+
 Two honest caveats:
 
 - **Cross-language wall-clock is slippery.** Rust's number is so low mostly
@@ -273,8 +339,8 @@ let total = region { r ->
 }                                # <- the WHOLE tree frees here: one shot
 ```
 
-Measured on the installed 0.99.12 (native and C trace identically since
-0.99.7), at N=100 (the same size as kaikai's own shipped fixture,
+Measured on 0.99.12 and reproduced unchanged on 0.139.2 (native and C trace
+identically since 0.99.7), at N=100 (the same size as kaikai's own shipped fixture,
 `total=5050`) — `KAI_TRACE_RC=1`:
 
 ```
@@ -305,7 +371,9 @@ cost model, proven by the refcount, on a linked structure `Vec` cannot express.
   bump arena those dead nodes accumulate until the region frees. Before the
   convergence, native happened to reuse the spine in place (tiny memory,
   `incref≈N`); the converged model bump-allocates on both: at N=10k both
-  backends trace `arena_alloc=50M`, `incref=0`, at **~1.7 GB** peak RSS. That
+  backends trace `arena_alloc=50M`, `incref=0`, at **~1.7 GB** peak RSS
+  (re-run on 0.139.2: `arena_alloc=50005000 arena_free=50005000
+  incref_total=0`, 1.6 GB, ~0.6 s, both backends). That
   is the trade stated plainly: zero counting, no recycling. Regions are
   unambiguously the right tool when the lifetime is short and *nothing escapes*
   (build → query → drop); long-lived churn stays where Perceus shines. The
@@ -323,7 +391,7 @@ cost model, proven by the refcount, on a linked structure `Vec` cannot express.
   default heap value cannot give you a guaranteed contiguous `repr` the same
   way; you reach for `Vec[T]` (contiguous, unboxed, the flat case) or a
   `region { }` arena (`Tree<r>`, the linked case) — both opt-in, and the arena
-  is C-backend-only today and does not recycle (see the sub-case above).
+  does not recycle abandoned nodes (see the sub-case above).
 - **This is the dual of [case 4](../04-tree-rewrite-reuse/).** There, the
   cost of the borrow checker was expressivity (cyclic/shared/mutable shapes
   get pushed to `Rc`/`Arc`). Here, the payoff of the borrow checker is a

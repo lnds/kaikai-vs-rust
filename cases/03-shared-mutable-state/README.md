@@ -96,7 +96,6 @@ compiles and runs (native backend), prints `counter=15`:
 
 ```kaikai
 import actor
-import spawn
 
 use Actor    # open the effect's ops so send/receive/self resolve by bare name
 
@@ -219,6 +218,25 @@ The old "parallelism is opt-in" caveat is gone as of 0.104.0: the default is
 N = host cores. `KAI_THREADS=1` remains as the escape hatch, byte-identical
 to the cooperative single-thread scheduler.
 
+**Re-measured on kaikai 0.139.2 / rustc 1.99.0** — on a different machine, an
+Apple M3 Max (16 cores), so read the ratios, not the seconds against the
+table above. Min of 6–10 warm runs:
+
+| Config | wall | speedup | peak RSS |
+|---|---|---|---|
+| kaikai, `KAI_THREADS=1` | 1.25 s | 1× | 3.5 MiB |
+| kaikai, `KAI_THREADS=4` | 0.31 s | 4.0× | 4.2 MiB |
+| kaikai, `KAI_THREADS=8` | 0.16 s | 7.8× | 4.6 MiB |
+| kaikai, no env var (16 threads) | 0.16 s | 7.8× | 5.4 MiB |
+| Rust, 8 × `thread::spawn` | 0.16 s | — | 1.8 MiB |
+
+Wall parity holds, out of the box, and the C backend still matches native
+(0.16 s / 5.2 MiB). The memory story moved **toward** kaikai: the default
+scheduler's fixed base shrank from ~10 MiB to ~2 MiB (a hello-world is
+3.7 MiB at the default vs 1.7 MiB at `KAI_THREADS=1`), so this bench reads
+5.4 MiB at the default instead of 12.8 MiB. Rust is still smaller, by ~3.6 MiB
+rather than ~11 MiB.
+
 There is a structural asymmetry the numbers don't show: cross-thread
 sends **copy**. Partial sums are cheap to copy; a large shared structure is
 not. Rust's `Arc<Mutex>` shares one allocation across cores; kaikai's model
@@ -237,8 +255,8 @@ kai build shared_state_fibers_REJECTED.kai                      # compile error 
 
 # parallelism (default-on since 0.104.0; KAI_THREADS=1 for the serial baseline)
 kai build --release kaikai/parallel_counter.kai -o /tmp/pc
-time /tmp/pc                                                    # all cores, ~0.14 s
-KAI_THREADS=1 sh -c 'time /tmp/pc'                              # serial baseline, ~1.1 s
+time /tmp/pc                                                    # all cores, ~0.15 s
+KAI_THREADS=1 sh -c 'time /tmp/pc'                              # serial baseline, ~1.2 s
 rustc --edition 2024 -O rust/parallel_counter.rs -o /tmp/pr
 time /tmp/pr 300000000
 ```
@@ -247,11 +265,13 @@ time /tmp/pr 300000000
 
 Safety is symmetric — both languages reject shared mutable state across
 concurrency at compile time. As of 0.104.0, wall-clock is symmetric **out of
-the box** (both default to all cores, 0.14 s each way). What remains:
+the box** (both default to all cores; 0.16 s each way on 0.139.2). What
+remains:
 
 - **Rust's resident footprint is smaller.** kaikai's default multi-thread
-  scheduler carries a constant ~10 MiB base (12.8 vs 1.7 MiB on this bench).
-  Fixed cost, not a scaling term — but real for small processes.
+  scheduler carries a constant base — ~10 MiB on 0.104, ~2 MiB on 0.139.2
+  (5.4 vs 1.8 MiB on this bench). Fixed cost, not a scaling term, and now
+  small — but still a 3× ratio for a tiny process.
 - **Rust can share; kaikai copies.** `Arc<Mutex>` gives N cores one allocation;
   kaikai's cross-thread sends deep-copy the message. For partial results that
   is free; for a large shared structure, Rust expresses a shape kaikai

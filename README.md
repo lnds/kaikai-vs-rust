@@ -14,7 +14,10 @@ one.
 
 ## Disclaimer / methodology
 
-- **Verified with `rustc 1.92.0` and `kaikai 0.114.0` (hanga-roa, stage 2).**
+- **Verified with `rustc 1.99.0` and `kaikai 0.139.2` (hanga-roa, stage 2).**
+  The latest re-run (2026-10-09) left every verdict unchanged; perf numbers
+  from it were taken on an Apple M3 Max (16 cores), earlier ones on an M4 Pro,
+  so compare ratios across releases rather than absolute seconds.
   kaikai has two backends, a default `native` (LLVM) and `--backend=c`; both are
   exercised where a result could differ. Building this repo on 0.94 surfaced
   three compiler bugs (filed as lnds/kaikai#995–997); **all three are fixed as
@@ -66,10 +69,10 @@ one.
 | # | Case | Who wins | Claim (one line) |
 |---|------|----------|------------------|
 | 1 | [cyclic-graph](cases/01-cyclic-graph/) | kaikai (ergonomics) | A two-node pointer cycle: safe `&` refs are rejected (E0506); Rust forces `Rc<RefCell>`+`Weak`, kaikai uses the `Mutable` effect. *(A 0.99.5 typer regression, [#1194](https://github.com/lnds/kaikai/issues/1194), briefly blocked it; fixed on 0.99.6 — runs again.)* |
-| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | even (wall + memory) → Rust (default-on, sharing) | One counter mutated by N tasks: **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"), pushing you to `Arc<Mutex>` / an actor. On 0.99.11 the M:N scheduler (`KAI_THREADS=8`) reached **wall parity with Rust threads** on a CPU-bound bench (0.14 s vs 0.14 s on 0.99.12, ~8× self-speedup); the ~150 MiB/thread runtime-table cost it shipped with ([#1212](https://github.com/lnds/kaikai/issues/1212)) was fixed on 0.99.12 — same bench now 2.4 MiB vs Rust's 1.7 MiB. Rust keeps default-on parallelism and shared memory (kaikai copies cross-thread sends). |
-| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | kaikai (ergonomics) | Perceus reuses nodes in place when unique (`reuse_in_place=5`, no `Rc`/`make_mut`) and copies correctly when shared — both backends, on 0.99. (On 0.94 the native backend corrupted the shared case; that bug is fixed. On 0.99 native codegen also caught up to C in throughput.) |
+| 3 | [shared-mutable-state](cases/03-shared-mutable-state/) | even (wall, out of the box) → Rust (sharing, footprint) | One counter mutated by N tasks: **both** reject shared mutation at compile time (Rust E0499; kaikai "mutable cell escapes its block"), pushing you to `Arc<Mutex>` / an actor. The M:N scheduler shipped on 0.99.11 and has been **on by default since 0.104** (`KAI_THREADS` = host cores): on 0.139 a CPU-bound bench runs at **wall parity with Rust threads with no env var** (0.16 s vs 0.16 s, ~8× self-speedup). Rust keeps shared memory (kaikai copies cross-thread sends) and a smaller footprint — 1.8 MiB vs kaikai's 5.4 MiB (kaikai read 12.9 MiB on 0.114). |
+| 4 | [tree-rewrite-reuse](cases/04-tree-rewrite-reuse/) | kaikai (ergonomics) | Perceus reuses nodes in place when unique (`reuse_in_place=5`, no `Rc`/`make_mut`) and copies correctly when shared — both backends, on 0.99. (On 0.94 the native backend corrupted the shared case; that bug is fixed.) At scale it is wall parity with `Rc::make_mut` — 0.20–0.22 s vs 0.22 s on an 8.4M-node tree on 0.139 — on ~36% less memory (165 vs 259 MiB). |
 | 5 | [effects-vs-boilerplate](cases/05-effects-vs-boilerplate/) | kaikai (ergonomics) | `async` is a viral colour in Rust; a kaikai effect row is discharged by a handler. Capability injection without rewriting signatures. |
-| 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** (wall only) | Bulk flat records. The default `[Point]` is a linked list under Perceus RC; the opt-out `Vec[Point]` (value vector, unboxed inline, in-place when unique) now matches Rust's memory model — **0.06 s / 155 MB vs Rust's 0.01 s / 154 MB at N=10M**. Rust still wins the absolute wall (~6×, mostly LLVM vectorizing); it no longer wins the layout/RC story. |
+| 6 | [flat-layout-no-rc](cases/06-flat-layout-no-rc/) | **Rust** (wall only) | Bulk flat records. The default `[Point]` is a linked list under Perceus RC; the opt-out `Vec[Point]` (value vector, unboxed inline, in-place when unique) now matches Rust's memory model — **0.08 s / 155.6 MiB vs Rust's 0.01 s / 154.2 MiB at N=10M** (0.139, C backend; native 0.14 s). Rust still wins the absolute wall (~8×, mostly LLVM vectorizing); it no longer wins the layout/RC story. |
 
 > Case numbering skips 2: the self-referential candidate was discarded (see
 > below). Each case folder has its own `README.md`, a `rust/` directory (the
@@ -81,9 +84,9 @@ wall-clock — its `Vec[T]` value vector closed the memory gap to parity, so the
 "Rust wins the layout" headline is gone. Case 3's parallelism asymmetry, a
 clean Rust win through 0.99.6, **closed on wall-clock on 0.99.11** when the
 M:N scheduler shipped, and **on memory on 0.99.12** when its per-thread
-runtime-table cost was fixed — what Rust keeps there is default-on parallelism
-(kaikai's is opt-in via `KAI_THREADS`) and shared memory (kaikai copies
-cross-thread sends). Cases 1, 4, and 5 are kaikai ergonomics wins. That is
+runtime-table cost was fixed; 0.104 then made parallelism the default, so
+"opt-in" is gone too — what Rust keeps there is shared memory (kaikai copies
+cross-thread sends) and a smaller resident footprint. Cases 1, 4, and 5 are kaikai ergonomics wins. That is
 the point — this is not a sales sheet, and the verdicts move as the compiler
 improves (case 4 was a Rust win on 0.94, a kaikai win from 0.98; case 6 went
 from a clean Rust layout win to a Rust wall-only win once `Vec[T]` shipped;
@@ -193,3 +196,14 @@ compiler moving under the comparison in real time.
 > [PR #1216](https://github.com/lnds/kaikai/pull/1216) — hello-world back to
 > ~1.7 MiB, re-measured). The suite is never "done": every upgrade is re-run,
 > and each one both closes old bugs and opens new ones.
+>
+> The 0.139.2 re-run — 25 minor releases and seven `rustc` releases later —
+> is the quiet version of the same story: every case still green on both
+> backends, no verdict moved, and no new bug of ours. What moved was the fine
+> print, in both directions. For kaikai: the default scheduler's fixed memory
+> base fell from ~10 MiB to ~2 MiB, the RC trace became complete without
+> pinning one thread, and the idiomatic list pipeline in case 6 does about
+> half the reference counting it used to. Against it: the boxed `Array[Point]`
+> row is about twice as slow as when it was first measured, and the native
+> backend's wall-clock gap to the C backend on `Vec` widened from ~1.4× to
+> ~1.6×. Both are written down in case 6 rather than left at the old numbers.

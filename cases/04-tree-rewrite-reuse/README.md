@@ -108,9 +108,9 @@ cd rust
 rustc --edition 2024 tree_rebuild_rc.rs -o trc && ./trc   # orig=6 inc=9
 rustc --edition 2024 tree_makemut.rs   -o tmm && ./tmm    # unique new=9 / shared original=30 derived=32
 cd ../kaikai
-# KAI_THREADS=1 keeps the RC trace complete (the default M:N scheduler only
-# reports the main thread's ledger — upstream #1338)
-KAI_THREADS=1 KAI_TRACE_RC=1 kai run reuse_unique.kai            # new=9 / reuse_in_place=5
+# On 0.104–0.114 the trace needed KAI_THREADS=1 to be complete (upstream
+# #1338); on 0.139 the default scheduler reports the full ledger.
+KAI_TRACE_RC=1 kai run reuse_unique.kai                          # new=9 / reuse_in_place=5
 kai build --backend=native aliased_corruption.kai -o t && ./t   # before=6 orig_after=6 new=9
 kai build --backend=c      aliased_corruption.kai -o t && ./t   # before=6 orig_after=6 new=9
 ```
@@ -169,6 +169,34 @@ tarball, so the native-inlining trap that skewed 0.104 numbers (upstream
 manual fix — but still check the file is present before trusting a native
 number. RC behavior re-confirmed intact at `KAI_THREADS=1`:
 `reuse_in_place=2097151` at depth 20, both backends.
+
+**Re-measured on 0.139.2 / rustc 1.99.0 (depth 22, min of 15 warm runs).**
+A different machine from the paragraphs above — an Apple M3 Max — so every
+row, Rust included, was re-run:
+
+| | wall | peak RSS |
+|---|---:|---:|
+| Rust `Rc::make_mut` (`-O`)            | 0.22 s | 259 MiB |
+| kaikai C, default scheduler           | 0.20 s | 165 MiB |
+| kaikai native, default scheduler      | 0.22 s | 165 MiB |
+| kaikai C, `KAI_THREADS=1`             | 0.16 s | 163 MiB |
+| kaikai native, `KAI_THREADS=1`        | 0.19 s | 163 MiB |
+
+Run as shipped, it is **wall parity** (0.20–0.22 s vs 0.22 s) on **~36% less
+memory** — the RSS lead widened from 179 to 165 MiB against Rust's unchanged
+259. Pinned to one scheduler thread kaikai leads on wall too (C 0.16 s), which
+exposes something the earlier runs did not separate: the default multi-thread
+scheduler costs ~0.03–0.04 s on this RC-heavy, single-fiber workload,
+reproduced across two sweeps. So the across-versions claim stands as written
+— parity on wall, a kaikai edge on memory — and the 0.104 "kaikai leads" row
+is recoverable only by opting out of the default. Native is a step behind C
+again here (0.19 vs 0.16 s at one thread).
+
+RC behavior is unchanged and now traces without pinning a thread:
+`reuse_in_place=2097151` at depth 20 on both backends at the default
+scheduler, byte-identical to the `KAI_THREADS=1` trace (#1338's
+`alloc_total=0` artifact is gone). `leaked` is down to 1 at scale, and
+`reuse_unique.kai` itself traces `leaked=0`.
 
 ## Where Rust wins / the trade-off
 
