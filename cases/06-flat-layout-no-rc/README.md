@@ -332,10 +332,9 @@ as the before:
 - **The model did not change.** Trace at 100k on both backends:
   `alloc_total=9 vec_inplace=100000 vec_cow=0 incref_total=0`; RSS within
   1% of Rust.
-- **What is left is not vectorization.** The released compiler links LLVM 18,
-  which does not vectorize this loop ("could not determine number of loop
-  iterations"); a build linked against LLVM 22 does, and measured ~4 ms of the
-  ~53 ms on this machine. Most of the remaining gap is building the vector:
+- **What is left is not vectorization.** The sum loop is not vectorized by
+  the released compiler (it links LLVM 18), and summing is the small part of
+  the time anyway. Most of the remaining gap is building the vector:
   a fill-only variant (same `fill`, prints `vec_length` instead of summing)
   takes 54 ms of the full program's 60 ms in a second pass on a slightly
   busier machine. Each `vec.push` re-checks uniqueness and shape, where
